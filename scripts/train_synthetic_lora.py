@@ -183,6 +183,7 @@ def run(args, cache, root, snap):
               "model_license": "Apache-2.0 (review upstream license before distribution)",
               "base_model_sha256": sha_file(snap / "model.safetensors"), "dataset_sha256": sha_bytes(data_bytes),
               "adapter_sha256": sha_file(adapter / "adapter_model.safetensors"),
+              "adapter_config_sha256": sha_file(adapter / "adapter_config.json"),
               "script_sha256": sha_file(Path(__file__)), "device": "cpu", "seed": SEED,
               "steps": args.steps, "threads": args.threads, "trainable_parameters": trainable,
               "train_count": len(train), "holdout_count": len(holdout), "train_losses": training_losses,

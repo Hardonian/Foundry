@@ -153,6 +153,7 @@ def run_experiment(args, root, cache, snap):
         raise RuntimeError("non-finite adapter weights")
     adapter = output / "adapter"
     model.save_pretrained(adapter, safe_serialization=True)
+    adapter_config_sha256 = sha_file(adapter / "adapter_config.json")
     model.eval()
     gen_config = GenerationConfig(do_sample=False, max_new_tokens=8, pad_token_id=tokenizer.eos_token_id,
                                   eos_token_id=tokenizer.eos_token_id)
@@ -175,6 +176,8 @@ def run_experiment(args, root, cache, snap):
         base = evaluate(model, datasets["test"])
     adapted = evaluate(model, datasets["test"])
     base_model = model.unload()
+    if sha_file(adapter / "adapter_config.json") != adapter_config_sha256:
+        raise RuntimeError("adapter configuration changed before reload")
     reloaded = PeftModel.from_pretrained(base_model, adapter, is_trainable=False, local_files_only=True)
     reload_results = evaluate(reloaded, datasets["test"])
     if adapted != reload_results:
@@ -184,6 +187,7 @@ def run_experiment(args, root, cache, snap):
               "preregistration_sha256": sha_file(output / "preregistration.json"),
               "dataset_sha256": sha_file(output / "synthetic-dataset.json"),
               "adapter_sha256": sha_file(adapter / "adapter_model.safetensors"),
+              "adapter_config_sha256": adapter_config_sha256,
               "seed": SEED, "steps": STEPS, "threads": args.threads, "trainable_parameters": params,
               "train_losses": train_losses, "base": {"metrics": metrics(base), "cases": base},
               "adapter": {"metrics": metrics(adapted), "cases": adapted}, "reload_exact_match": True,

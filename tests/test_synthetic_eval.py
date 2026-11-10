@@ -1,5 +1,7 @@
+import hashlib
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -27,6 +29,22 @@ class SyntheticEvaluationTest(unittest.TestCase):
         self.assertEqual(result["precision"], 0)
         self.assertEqual(result["invalid_outputs"], 1)
         self.assertEqual(result["max_token_limit_hits"], 1)
+
+    def test_adapter_hashes_reject_modified_configuration_and_legacy_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            weights = p / "adapter_model.safetensors"
+            config = p / "adapter_config.json"
+            weights.write_bytes(b"synthetic-weights")
+            config.write_bytes(b'{"use_rslora":false}')
+            manifest = {"adapter_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
+                        "adapter_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest()}
+            module.verify_adapter_hashes(p, manifest)
+            config.write_bytes(b'{"use_rslora":true}')
+            with self.assertRaises(ValueError):
+                module.verify_adapter_hashes(p, manifest)
+            with self.assertRaises(ValueError):
+                module.verify_adapter_hashes(p, {"adapter_sha256": manifest["adapter_sha256"]})
 
     def test_undefined_precision_and_recall_are_null(self):
         row = {"expected": "matched", "output": "matched", "max_token_limit_hit": False}

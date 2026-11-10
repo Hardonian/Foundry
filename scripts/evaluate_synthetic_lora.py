@@ -36,6 +36,15 @@ def metrics(rows):
             "max_token_limit_hits": sum(r["max_token_limit_hit"] for r in rows)}
 
 
+def verify_adapter_hashes(adapter, manifest):
+    """Reject missing or modified adapter weights or configuration."""
+    for key, filename in (("adapter_sha256", "adapter_model.safetensors"),
+                          ("adapter_config_sha256", "adapter_config.json")):
+        path = adapter / filename
+        if not path.is_file() or not manifest.get(key) or manifest[key] != sha_file(path):
+            raise ValueError(f"missing or mismatched {key}; older manifests cannot be safely evaluated")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -56,6 +65,8 @@ def main():
     if os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") < 8 * 1024**3:
         raise SystemExit("less than 8 GiB free physical memory")
     snap = cache / "hub" / "models--Qwen--Qwen2.5-Coder-0.5B-Instruct" / "snapshots" / REVISION
+    if any(not (snap / name).is_file() for name in ("model.safetensors", *BLOBS)):
+        raise SystemExit("required model files are missing; no download attempted")
     if sha_file(snap / "model.safetensors") != MODEL_SHA256:
         raise SystemExit("base model hash mismatch")
     for name, expected in BLOBS.items():
@@ -69,9 +80,12 @@ def main():
     manifest = json.loads((run / "result.json").read_text())
     adapter = run / "adapter"
     if (manifest.get("status") != "completed" or manifest.get("model") != MODEL or
-        manifest.get("revision") != REVISION or manifest.get("dataset_sha256") != hashlib.sha256(data).hexdigest() or
-        manifest.get("adapter_sha256") != sha_file(adapter / "adapter_model.safetensors")):
+        manifest.get("revision") != REVISION or manifest.get("dataset_sha256") != hashlib.sha256(data).hexdigest()):
         raise SystemExit("training run manifest mismatch")
+    try:
+        verify_adapter_hashes(adapter, manifest)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     cfg = json.loads((adapter / "adapter_config.json").read_text())
     if (cfg.get("peft_type") != "LORA" or cfg.get("task_type") != "CAUSAL_LM" or cfg.get("r") != 4 or
         cfg.get("lora_alpha") != 8 or set(cfg.get("target_modules", [])) != {"q_proj", "v_proj"} or
@@ -130,6 +144,7 @@ def run_eval(args, root, cache, snap, adapter, data, manifest):
     adapted = generate(model)
     result = {"status": "completed", "data_origin": "synthetic", "model": MODEL, "revision": REVISION,
               "base_model_sha256": MODEL_SHA256, "adapter_sha256": manifest["adapter_sha256"],
+              "adapter_config_sha256": manifest["adapter_config_sha256"],
               "dataset_sha256": manifest["dataset_sha256"], "training_script_sha256": manifest["script_sha256"],
               "evaluation_script_sha256": sha_file(Path(__file__)), "decoding": {"do_sample": False, "max_new_tokens": 8},
               "base": {"metrics": metrics(base), "cases": base},
