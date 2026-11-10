@@ -16,6 +16,7 @@ checkpoints/
 artifacts/
 datasets/
 models/
+.foundry/
 dist/
 build/
 *.egg-info/
