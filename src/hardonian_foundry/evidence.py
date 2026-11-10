@@ -11,11 +11,36 @@ signed anchors exist yet. Writers must cooperate on the sidecar advisory lock; t
 not a multi-host transaction system or a crash-durable production ledger. The lock file
 must not be removed while writers may be active. Outcomes always require human review.
 """
-import fcntl
 import hashlib
 import json
 import os
 import tempfile
+
+try:
+    import fcntl
+
+    def _lock(file_obj):
+        fcntl.flock(file_obj, fcntl.LOCK_EX)
+
+    def _unlock(file_obj):
+        fcntl.flock(file_obj, fcntl.LOCK_UN)
+
+    _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+except ImportError:
+    import msvcrt
+
+    def _lock(file_obj):
+        file_obj.seek(0)
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, 1)
+
+    def _unlock(file_obj):
+        try:
+            file_obj.seek(0)
+            msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+    _O_NOFOLLOW = 0
 
 GENESIS = "0" * 64
 MAX_KEY = 128
@@ -60,10 +85,13 @@ def append(path, record, *, key=None):
     if record.get("data_origin") != "synthetic":
         raise ValueError("record must declare synthetic data_origin")
     _canonical(record)  # rejects non-JSON values and NaN before any write
-    lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | _O_NOFOLLOW, 0o600)
     with os.fdopen(lock_fd, "r+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        return _append_locked(path, record, key)
+        _lock(lock)
+        try:
+            return _append_locked(path, record, key)
+        finally:
+            _unlock(lock)
 
 
 def _append_locked(path, record, key):
