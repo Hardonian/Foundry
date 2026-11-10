@@ -41,6 +41,15 @@ class LicensingTest(unittest.TestCase):
     def test_unapproved_provenance_denied(self):
         self.assert_denied({**VALID, "provenance": "trained"}, "provenance")
 
+    def test_unhashable_provenance_denied(self):
+        for value in ([], {}, ["synthetic"]):
+            self.assert_denied({**VALID, "provenance": value}, "provenance")
+
+    def test_spoofed_loopback_url_denied(self):
+        for url in ("http://127.0.0.1:80@external.example/weights", "http://127.0.0.1:80.example.com/x",
+                    "https://user:pass@example.com/x", "https://", "http://127.0.0.1:invalid/x"):
+            self.assert_denied({**VALID, "source_url": url}, "source_url")
+
     def test_unknown_field_denied(self):
         self.assert_denied({**VALID, "backdoor_url": "http://evil.example"}, "unknown field")
 

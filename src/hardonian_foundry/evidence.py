@@ -7,11 +7,15 @@ external checkpoint with head() and re-check it later via verify(..., expected_h
 
 This is metadata-level tamper evidence, not encrypted or tamper-proof storage. It is not
 an immutable production evidence service; no authentication, retention guarantees, or
-signed anchors exist yet. Outcomes always require human review.
+signed anchors exist yet. Writers must cooperate on the sidecar advisory lock; this is
+not a multi-host transaction system or a crash-durable production ledger. The lock file
+must not be removed while writers may be active. Outcomes always require human review.
 """
+import fcntl
 import hashlib
 import json
 import os
+import tempfile
 
 GENESIS = "0" * 64
 MAX_KEY = 128
@@ -21,8 +25,8 @@ def _canonical(record):
     return json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _entry_hash(seq, prev_hash, record):
-    payload = f"{seq}\n{prev_hash}\n{_canonical(record)}"
+def _entry_hash(seq, prev_hash, record, key):
+    payload = _canonical({"seq": seq, "prev_hash": prev_hash, "record": record, "key": key})
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -37,9 +41,16 @@ def append(path, record, *, key=None):
         raise ValueError("record must be a nonempty dict")
     if key is not None and (not isinstance(key, str) or not key.strip() or len(key) > MAX_KEY):
         raise ValueError("key must be a nonempty string of at most 128 characters")
-    if "data_origin" not in record:
-        raise ValueError("record must declare data_origin")
+    if record.get("data_origin") != "synthetic":
+        raise ValueError("record must declare synthetic data_origin")
     _canonical(record)  # rejects non-JSON values and NaN before any write
+    lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, "r+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _append_locked(path, record, key)
+
+
+def _append_locked(path, record, key):
     entries = []
     try:
         lines = _load_lines(path)
@@ -60,13 +71,20 @@ def append(path, record, *, key=None):
         "key": key,
         "prev_hash": prev,
         "record": record,
-        "entry_hash": _entry_hash(seq, prev, record),
+        "entry_hash": _entry_hash(seq, prev, record, key),
     }
     new_lines = lines + [json.dumps(entry, sort_keys=True, separators=(",", ":"))]
-    tmp = str(path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(new_lines) + "\n")
-    os.replace(tmp, path)
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".foundry-evidence-", dir=directory, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(new_lines) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return entry
 
 
@@ -89,17 +107,21 @@ def verify_entries(entries):
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             return {"status": "TAMPERED", "reason": "non-object entry", "count": index - 1, "head": None}
+        if set(entry) != {"seq", "key", "prev_hash", "record", "entry_hash"} or type(entry.get("seq")) is not int:
+            return {"status": "TAMPERED", "reason": "invalid entry fields", "count": index - 1, "head": None}
         if entry.get("seq") != index or entry.get("prev_hash") != prev:
             return {"status": "TAMPERED", "reason": "sequence or chain link broken",
                     "count": index - 1, "head": None}
         key = entry.get("key")
         if key is not None:
+            if not isinstance(key, str) or not key.strip() or len(key) > MAX_KEY:
+                return {"status": "TAMPERED", "reason": "invalid idempotency key", "count": index - 1, "head": None}
             if key in seen_keys:
                 return {"status": "TAMPERED", "reason": "duplicate idempotency key",
                         "count": index - 1, "head": None}
             seen_keys.add(key)
         try:
-            expected = _entry_hash(index, prev, entry["record"])
+            expected = _entry_hash(index, prev, entry["record"], key)
         except (KeyError, TypeError, ValueError):
             return {"status": "TAMPERED", "reason": "record unreadable", "count": index - 1, "head": None}
         if entry.get("entry_hash") != expected:

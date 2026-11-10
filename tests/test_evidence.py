@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from hardonian_foundry import evidence
 
@@ -53,6 +54,26 @@ class EvidenceTest(unittest.TestCase):
             handle.write("\n".join(lines) + "\n")
         self.assertEqual(evidence.verify(self.path)["status"], "TAMPERED")
 
+    def test_concurrent_cooperating_writers_preserve_entries(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            entries = list(pool.map(lambda n: evidence.append(self.path, record(n), key=f"key-{n}"), range(20)))
+        self.assertEqual(len(entries), 20)
+        report = evidence.verify(self.path)
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(report["count"], 20)
+
+    def test_tampered_idempotency_key_detected(self):
+        evidence.append(self.path, record(1), key="original")
+        anchor = evidence.head(self.path)
+        with open(self.path, encoding="utf-8") as handle:
+            entry = json.loads(handle.read())
+        entry["key"] = "altered"
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        self.assertEqual(evidence.verify(self.path, expected_head=anchor)["status"], "TAMPERED")
+        with self.assertRaises(ValueError):
+            evidence.append(self.path, record(2), key="original")
+
     def test_duplicate_key_rejected(self):
         evidence.append(self.path, record(1), key="alpha")
         with self.assertRaises(ValueError):
@@ -78,7 +99,7 @@ class EvidenceTest(unittest.TestCase):
             evidence.append(self.path, record(2))
 
     def test_invalid_records_rejected_before_write(self):
-        for bad in ([], "string", {"no_origin": 1}, {"data_origin": "synthetic", "x": float("nan")}):
+        for bad in ([], "string", {"no_origin": 1}, {"data_origin": "customer"}, {"data_origin": "synthetic", "x": float("nan")}):
             with self.assertRaises(ValueError):
                 evidence.append(self.path, bad)
         self.assertFalse(os.path.exists(self.path))
