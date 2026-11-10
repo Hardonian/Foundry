@@ -19,24 +19,29 @@ jobs:
         run: PYTHONPATH=src python -m unittest discover -s tests -v
       - name: Synthetic smoke
         run: PYTHONPATH=src python -m hardonian_foundry.cli demo
+      - name: Refinery smoke
+        run: |
+          PYTHONPATH=src python -m hardonian_foundry.cli refinery validate-dataset
+          PYTHONPATH=src python -m hardonian_foundry.cli refinery preflight
+          PYTHONPATH=src python -m hardonian_foundry.cli refinery run --output-root .foundry/ci_runs
       - name: Compile
         run: python -m compileall -q src tests
       - name: Install pinned security tooling
         # pip>=26.2 first: pip-audit project mode audits the ephemeral env, which
         # bootstraps with the host pip; older pip versions carry known CVEs.
         run: python -m pip install --quiet --upgrade 'pip>=26.2' && python -m pip install --quiet ruff==0.17.4 bandit==1.9.4 pip-audit==2.10.1
-      - name: Ruff lint (lifecycle modules)
-        # Scoped to the evidence/licensing/tenancy modules and their tests. Pre-existing
-        # findings in baseline.py/cli.py/test_baseline.py are tracked for follow-up once
-        # the open provider PR lands; widening the gate then avoids file conflicts now.
+      - name: Ruff lint (lifecycle and refinery modules)
         run: >-
           ruff check
           src/hardonian_foundry/evidence.py
           src/hardonian_foundry/licensing.py
           src/hardonian_foundry/tenancy.py
+          src/hardonian_foundry/refinery.py
+          src/hardonian_foundry/cli.py
           tests/test_evidence.py
           tests/test_licensing.py
           tests/test_tenancy.py
+          tests/test_refinery.py
       - name: Bandit (medium and above)
         run: bandit -q -r src --severity-level medium
       - name: Pip audit
