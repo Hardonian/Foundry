@@ -117,3 +117,4 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote <run_id> --outp
 - **Trained Model Registry:** Durable, encrypted artifact store for validated model checkpoints and LoRA adapters.
 - **Live Inference Gateway:** Sandboxed, authenticated model router with timeout and circuit-breaking controls.
 - **Adversarial Evaluation:** Expanded challenge sets beyond template-generated synthetic cases.
+

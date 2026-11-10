@@ -218,9 +218,10 @@ def evaluate_dataset(records=None, *, seed=42):
         critical_total += int(truth and row["critical"])
         critical_fn += int(not pred and truth and row["critical"])
 
-    precision = tp / (tp + fp) if (tp + fp) else 1.0
-    recall = tp / (tp + fn) if (tp + fn) else 1.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 1.0
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    f1 = 2 * precision * recall / (precision + recall) if (precision is not None and recall is not None and precision + recall) else None
+    critical_fn_rate = (critical_fn / critical_total) if critical_total else None
 
     return {
         "data_origin": "synthetic",
@@ -232,7 +233,7 @@ def evaluate_dataset(records=None, *, seed=42):
         "precision": precision,
         "recall": recall,
         "f1": f1,
-        "critical_false_negative_rate": (critical_fn / critical_total) if critical_total else 0.0,
+        "critical_false_negative_rate": critical_fn_rate,
         "coverage_automatic_decision": 0.0,
         "review_rate": 1.0,
         "cost_per_case_usd": None,
@@ -335,7 +336,19 @@ def inspect_run(run_id, *, output_root=None):
                         matched_entry = entry
                         break
             if matched_entry and matched_entry.get("entry_hash") == expected_entry_hash and matched_entry.get("seq") == expected_seq:
-                provenance_status = "PROVENANCE_VERIFIED"
+                rec = matched_entry.get("record", {})
+                eval_obj = run_record.get("evaluation", {})
+                if (
+                    rec.get("run_id") != run_id
+                    or rec.get("dataset_sha256") != run_record.get("dataset_sha256")
+                    or rec.get("test_sha256") != run_record.get("test_sha256")
+                    or rec.get("f1") != eval_obj.get("f1")
+                    or rec.get("critical_false_negative_rate") != eval_obj.get("critical_false_negative_rate")
+                    or rec.get("preflight_status") != run_record.get("preflight", {}).get("status")
+                ):
+                    provenance_status = "TAMPERED_METADATA_MISMATCH"
+                else:
+                    provenance_status = "PROVENANCE_VERIFIED"
             else:
                 provenance_status = "TAMPERED_ENTRY_MISMATCH"
         else:
@@ -402,7 +415,7 @@ def evaluate_promotion(run_id, *, output_root=None):
     evidence_summary["provenance_status"] = inspection["provenance_status"]
     evidence_summary["preflight_status"] = inspection["preflight_status"]
 
-    # Gate 2: Tamper-evident evidence chain must be intact
+    # Gate 2: Tamper-evident evidence chain must be intact and match metadata
     if inspection["provenance_status"] != "PROVENANCE_VERIFIED":
         missing_evidence.append("tamper_evident_proof")
         reasons.append(f"provenance verification failed: {inspection['provenance_status']}")
@@ -418,17 +431,28 @@ def evaluate_promotion(run_id, *, output_root=None):
         missing_evidence.append("evaluation_metrics")
         reasons.append("evaluation metrics missing from run record")
     else:
-        evidence_summary["evaluation_f1"] = eval_metrics.get("f1")
-        evidence_summary["critical_fn_rate"] = eval_metrics.get("critical_false_negative_rate")
-        if eval_metrics.get("critical_false_negative_rate", 1.0) != 0.0:
+        f1 = eval_metrics.get("f1")
+        cfn_rate = eval_metrics.get("critical_false_negative_rate")
+        evidence_summary["evaluation_f1"] = f1
+        evidence_summary["critical_fn_rate"] = cfn_rate
+
+        if cfn_rate is None:
+            missing_evidence.append("critical_case_coverage")
+            reasons.append("evaluation lacks critical test cases (critical false negative rate is undefined)")
+        elif cfn_rate != 0.0:
             missing_evidence.append("zero_critical_false_negatives")
-            reasons.append(f"critical false negative rate ({eval_metrics.get('critical_false_negative_rate')}) exceeds zero tolerance")
-        if eval_metrics.get("review_rate", 0.0) != 1.0:
+            reasons.append(f"critical false negative rate ({cfn_rate}) exceeds zero tolerance")
+
+        if eval_metrics.get("review_rate") != 1.0:
             missing_evidence.append("mandatory_human_review_policy")
             reasons.append("evaluation does not enforce 100% human review policy")
-        if (eval_metrics.get("f1") is None) or eval_metrics.get("f1") < 0.8:
+
+        if f1 is None:
+            missing_evidence.append("positive_case_coverage")
+            reasons.append("evaluation lacks positive/mismatch cases (f1 score is undefined)")
+        elif f1 < 0.8:
             missing_evidence.append("minimum_f1_benchmark")
-            reasons.append(f"f1 score ({eval_metrics.get('f1')}) does not meet benchmark threshold")
+            reasons.append(f"f1 score ({f1}) does not meet benchmark threshold")
 
     # Gate 5: Model manifest and SPDX licensing
     model_manifest = inspection.get("model_manifest")

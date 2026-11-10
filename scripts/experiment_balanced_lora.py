@@ -3,7 +3,6 @@
 Experimental CPU-only research. No customer data, promotion, or deployment.
 """
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +10,11 @@ import random
 import shutil
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from evaluate_synthetic_lora import metrics
 from train_synthetic_lora import (
@@ -94,7 +98,8 @@ def main():
     fd = os.open(root / ".training.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SystemExit("another participating training job holds the lock") from exc
         run_experiment(args, root, cache, snap)

@@ -140,6 +140,42 @@ class RefineryTest(unittest.TestCase):
         inspection = inspect_run(run_id, output_root=self.output_root)
         self.assertNotEqual(inspection["provenance_status"], "PROVENANCE_VERIFIED")
 
+    def test_inspect_run_detects_tampered_run_json_metadata(self):
+        run = create_run(output_root=self.output_root)
+        run_id = run["run_id"]
+
+        # Tamper run.json while leaving evidence ledger intact
+        run_file = os.path.join(self.output_root, run_id, "run.json")
+        with open(run_file, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        data["evaluation"]["f1"] = 0.5
+        with open(run_file, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+
+        inspection = inspect_run(run_id, output_root=self.output_root)
+        self.assertEqual(inspection["provenance_status"], "TAMPERED_METADATA_MISMATCH")
+
+    def test_evaluate_promotion_blocks_degenerate_uncovered_benchmarks(self):
+        # Distinct matching cases with no mismatches (tp+fp=0 -> f1 is None) and no critical (cfn is None)
+        matching_data = [
+            {"id": f"synthetic-{i:03d}", "expected_minor": 100 + i * 10, "actual_minor": 100 + i * 10, "critical": False}
+            for i in range(10)
+        ]
+        manifest = {
+            "name": "synthetic-model",
+            "license_id": "Apache-2.0",
+            "provenance": "synthetic",
+            "data_origin": "synthetic",
+        }
+        run = create_run(output_root=self.output_root, dataset=matching_data, model_manifest=manifest)
+        run_id = run["run_id"]
+
+        promo = evaluate_promotion(run_id, output_root=self.output_root)
+        self.assertFalse(promo["promoted"])
+        self.assertEqual(promo["status"], "BLOCKED")
+        self.assertIn("critical_case_coverage", promo["missing_evidence"])
+        self.assertIn("positive_case_coverage", promo["missing_evidence"])
+
     def test_evaluate_promotion_blocked_missing_evidence(self):
         # Create run without model manifest
         run = create_run(output_root=self.output_root)
