@@ -62,7 +62,7 @@ def evaluate(manifest):
     if "data_origin" in manifest and data_origin != "synthetic":
         reasons.append("only synthetic data origins are permitted")
     if "weights_sha256" in manifest and not (isinstance(manifest["weights_sha256"], str)
-                                             and HEX64.match(manifest["weights_sha256"])):
+                                             and HEX64.fullmatch(manifest["weights_sha256"])):
         reasons.append("weights_sha256 must be 64-char lowercase hex when present")
     if "source_url" in manifest:
         source = manifest["source_url"]

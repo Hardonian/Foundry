@@ -54,7 +54,7 @@ class LicensingTest(unittest.TestCase):
         self.assert_denied({**VALID, "backdoor_url": "http://evil.example"}, "unknown field")
 
     def test_malformed_weights_hash_denied(self):
-        for bad in ("XYZ", "0" * 63, "A" * 64, 12345):
+        for bad in ("XYZ", "0" * 63, "A" * 64, "0" * 64 + "\n", 12345):
             self.assert_denied({**VALID, "weights_sha256": bad}, "weights_sha256")
 
     def test_source_url_scheme_denied(self):
