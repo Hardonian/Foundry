@@ -9,6 +9,8 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli eval
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
+An opt-in, synthetic-only OpenAI-compatible loopback provider adapter is available as `python3 -m hardonian_foundry.cli provider --origin http://127.0.0.1:12345 --model example`. The address and model must identify an operator-approved local server; this example is not a configured service. Provider errors return UNAVAILABLE with nonzero exit and no heuristic substitution. A successful response is always review-required. This adapter is not verified against a live model-tools deployment; the inspected model-tools `app.main` implementation returns HTTP 501 for `/v1/chat/completions`. No real provider call is made by tests.
+
 `registry promote` always fails closed. Outputs are suggestions only and always require human review. The synthetic dataset is constructed programmatically; its split is seed-stable within the documented Python runtime. Evidence hashes are metadata, not encrypted or tamper-proof storage. Synthetic self-consistency is not pilot accuracy. No financial writes or tool execution exist.
 
 See docs/architecture.md for boundaries and outstanding work. Project does not include model weights or customer data.

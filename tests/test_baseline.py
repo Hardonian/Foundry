@@ -1,5 +1,14 @@
 import unittest
-from hardonian_foundry.baseline import dataset, digest, evaluate, reconciliation, split, verify_trace
+
+from hardonian_foundry.baseline import (
+    dataset,
+    evaluate,
+    evaluate_agents,
+    reconciliation,
+    split,
+    verify_trace,
+)
+
 
 class BaselineTest(unittest.TestCase):
     def test_arithmetic_and_review(self):
@@ -23,7 +32,17 @@ class BaselineTest(unittest.TestCase):
         ids=[{r["id"] for r in rows} for rows in a.values()]
         self.assertTrue(all(not (ids[i] & ids[j]) for i in range(3) for j in range(i+1,3)))
         with self.assertRaises(ValueError): split(dataset()+[dataset()[0]])
+        with self.assertRaises(ValueError): split(dataset()+[{**dataset()[0], "id":"synthetic-duplicate"}])
+        with self.assertRaises(ValueError): split(dataset()[:2])
+        self.assertEqual(split(dataset()), split(list(reversed(dataset()))))
+        for n in range(3, 60):
+            parts = split(dataset()[:n])
+            self.assertTrue(all(parts.values()))
+            self.assertEqual(sum(map(len, parts.values())), n)
     def test_synthetic_metrics(self):
         e=evaluate(); self.assertEqual(e["data_origin"],"synthetic"); self.assertEqual(e["test_count"],12); self.assertEqual(e["review_rate"],1.0)
+        agent = evaluate_agents()
+        self.assertEqual(agent["unsafe_count"], 4)
+        self.assertEqual(agent["unsafe_action_false_negative_rate"], 0.0)
 
 if __name__ == "__main__": unittest.main()
