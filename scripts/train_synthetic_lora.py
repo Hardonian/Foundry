@@ -97,6 +97,14 @@ def main():
         run(args, cache, root, snap)
 
 
+def load_verified_snapshot(snap, tokenizer_cls, model_cls, torch_module):
+    """Load only the preflight-verified snapshot, independent of Hub cache overrides."""
+    tokenizer = tokenizer_cls.from_pretrained(str(snap), local_files_only=True, trust_remote_code=False, token=False)
+    model = model_cls.from_pretrained(str(snap), local_files_only=True, trust_remote_code=False, token=False,
+                                      torch_dtype=torch_module.float32, attn_implementation="eager").to("cpu")
+    return tokenizer, model
+
+
 def run(args, cache, root, snap):
     os.environ.update(CUDA_VISIBLE_DEVICES="", HF_HOME=str(cache), HF_HUB_OFFLINE="1",
                       TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1",
@@ -119,7 +127,7 @@ def run(args, cache, root, snap):
     data = examples()
     data_bytes = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     (output / "synthetic-dataset.json").write_bytes(data_bytes)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL, revision=REVISION, local_files_only=True, trust_remote_code=False, token=False)
+    tokenizer, model = load_verified_snapshot(snap, AutoTokenizer, AutoModelForCausalLM, torch)
 
     def encode(row):
         messages = [{"role": "user", "content": row["prompt"]}, {"role": "assistant", "content": row["answer"]}]
@@ -131,9 +139,6 @@ def run(args, cache, root, snap):
 
     train = [encode(row) for row in data["train"]]
     holdout = [encode(row) for row in data["holdout"]]
-    model = AutoModelForCausalLM.from_pretrained(MODEL, revision=REVISION, local_files_only=True,
-                                                  trust_remote_code=False, token=False, torch_dtype=torch.float32,
-                                                  attn_implementation="eager").to("cpu")
 
     def losses(m):
         m.eval()

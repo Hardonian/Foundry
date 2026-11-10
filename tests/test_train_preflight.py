@@ -22,6 +22,24 @@ class TrainingPreflightTest(unittest.TestCase):
         self.assertTrue(all(x["id"].startswith("synthetic-") for rows in data.values() for x in rows))
         self.assertEqual(len(module.sha_bytes(json.dumps(data).encode())), 64)
 
+    def test_verified_snapshot_is_passed_to_both_loaders(self):
+        calls = []
+        class Loader:
+            @staticmethod
+            def from_pretrained(path, **kwargs):
+                calls.append((path, kwargs))
+                return Loader()
+            def to(self, device):
+                self.device = device
+                return self
+        class Torch:
+            float32 = "float32"
+        snapshot = Path("/verified/local/snapshot")
+        _, model = module.load_verified_snapshot(snapshot, Loader, Loader, Torch)
+        self.assertEqual([call[0] for call in calls], [str(snapshot), str(snapshot)])
+        self.assertTrue(all(call[1]["local_files_only"] and not call[1]["trust_remote_code"] and not call[1]["token"] for call in calls))
+        self.assertEqual(model.device, "cpu")
+
     def test_insecure_output_fails_before_training(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "open"
