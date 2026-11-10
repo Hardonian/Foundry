@@ -34,3 +34,14 @@ def assess(case):
     return {"schema_version": "1.0", "data_origin": "synthetic", "mode": "deterministic_policy",
             "category": category, "review_required": True, "financial_write": False,
             "evidence_hash": hashlib.sha256(encoded).hexdigest()}
+
+
+def assess_with_suggestion(case, suggestion):
+    """Compare untrusted suggestions to arithmetic; suggestions never authorize actions."""
+    result = assess(case)
+    allowed = {"matched", "amount_mismatch", "review_required"}
+    if not isinstance(suggestion, str) or suggestion not in allowed:
+        result.update({"model_status": "UNAVAILABLE", "model_agrees": None})
+    else:
+        result.update({"model_status": "REVIEW_REQUIRED", "model_agrees": suggestion == result["category"]})
+    return result

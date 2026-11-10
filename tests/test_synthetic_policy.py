@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from hardonian_foundry.synthetic_policy import assess
+from hardonian_foundry.synthetic_policy import assess, assess_with_suggestion
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -22,6 +22,21 @@ class SyntheticPolicyTest(unittest.TestCase):
             self.assertTrue(out["review_required"])
             self.assertFalse(out["financial_write"])
         self.assertEqual(len(rows), 24)
+
+    def test_untrusted_suggestions_cannot_change_policy_or_approve(self):
+        case = {"id": "synthetic-risk", "expected_minor": 10, "actual_minor": 11,
+                "expected_currency": "USD", "actual_currency": "USD"}
+        for suggestion in ("matched", "amount_mismatch", "review_required", None, {}, "Matched", ""):
+            with self.subTest(suggestion=suggestion):
+                out = assess_with_suggestion(case, suggestion)
+                self.assertEqual(out["category"], "amount_mismatch")
+                self.assertTrue(out["review_required"])
+                self.assertFalse(out["financial_write"])
+                if suggestion == "matched":
+                    self.assertFalse(out["model_agrees"])
+                if not isinstance(suggestion, str) or suggestion not in {"matched", "amount_mismatch", "review_required"}:
+                    self.assertEqual(out["model_status"], "UNAVAILABLE")
+                    self.assertIsNone(out["model_agrees"])
 
     def test_malformed_amounts_and_currencies_reject(self):
         case = {"id": "synthetic-case", "expected_minor": 10, "actual_minor": 10,
