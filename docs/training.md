@@ -1,0 +1,37 @@
+# Offline synthetic CPU LoRA smoke
+
+This is an early demonstrator, not a production training platform. It uses only built-in, generated synthetic reconciliation labels. Do not use real or customer data. No model or adapter is promoted, deployed, published, or proven suitable for any production task.
+
+The existing local cache must contain `Qwen/Qwen2.5-Coder-0.5B-Instruct` at revision `ea3f2471cf1b1f0db85067f1ef93848e38e88c25`. At this revision, the upstream model card identifies Apache-2.0. Confirm the current license, model card, attribution/redistribution obligations, and any derivative rights before each use or distribution: https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct/tree/ea3f2471cf1b1f0db85067f1ef93848e38e88c25 . The runner verifies the pinned safetensors SHA-256 and pinned Git blob IDs for required config/tokenizer files, refuses custom remote code, turns off Hub networking and implicit credentials, and does not download weights.
+
+Use an existing isolated CPU environment with Python 3.12, torch 2.6.0+cpu, transformers 4.49.0, peft 0.14.0, accelerate 1.4.0, and safetensors 0.8.0. The smoke was exercised with these installed versions. The repository does not yet provide a locked, clean-room installation of this training stack; do not silently upgrade packages in an existing environment.
+
+Set `HF_HOME` to a verified cache and `FOUNDRY_RUN_ROOT` to an existing, owner-only directory on a filesystem with at least 10 GiB free and less than 80% utilization. For genuine private IP or sensitive data, use separately provisioned encrypted, access-controlled storage; owner-only permissions alone do not encrypt data. No raw sensitive data is supported by this demonstration.
+
+Run with the Python interpreter from the isolated CPU environment:
+
+    python scripts/train_synthetic_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --steps 4 --threads 4
+
+The process limits CPU threads and steps, checks RAM and disk, uses a nonblocking cooperative lock, creates a fresh mode-0700 run directory, trains attention LoRA on CPU, compares base and adapter teacher-forced losses on four separate synthetic examples, saves a safetensors adapter, reloads it offline, and verifies loss agreement. The run result includes model/data/script/adapter hashes, dependency versions, exact revision, losses, seed, duration and limitations. A lock protects only participating jobs; it does not reserve GPU resources. Failures can leave a partial directory without `result.json`; inspect it and preserve or clean up deliberately.
+
+To compare base and adapter greedy generation on the same four synthetic cases from a completed run, set `FOUNDRY_TRAIN_RUN` to that private run directory and execute:
+
+    python scripts/evaluate_synthetic_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+
+The evaluation checks the model, dataset, adapter-weight and adapter-configuration hashes, only accepts the built-in synthetic dataset, uses an explicit attention mask, bounds output tokens, and records exact outputs, false-negative rate, regressions, and generation-limit hits. Older training manifests lacking an adapter-configuration hash are rejected; they are not silently upgraded. These hashes detect accidental or unauthorized changes only if the manifest itself is trusted; they are not signed provenance. It writes a separate private result directory. These holdout cases were already observed through teacher-forced loss evaluation: they are not pristine. The evaluator is not a promotion gate and cannot establish performance on real records.
+
+Warnings: Transformers warns that sliding-window attention is not implemented for the selected eager path; the cached configuration has `use_sliding_window: false`, and the smoke's sequences are at most 256 tokens, but this does not validate long-context behavior. An earlier runner revision also emitted a PEFT save warning because it loaded the base by Hub ID; the runner now loads the exact verified local snapshot directly. The adapter config may therefore include the local snapshot path; treat it as private metadata. Investigate runtime warnings before any serious training. Lower toy held-out loss is not a measured accuracy improvement.
+
+A separate fixed-budget experiment compares the original base and a newly trained LoRA adapter on group-disjoint, balanced synthetic records. It creates 48 training, 16 validation and 24 test cases with non-overlapping base amounts and different wording. It writes the split hashes and fixed 96-step budget before training; validation is reserved and not used for tuning, and the test is first scored after training. An observed test is no longer pristine. All splits use related generated templates, so disjoint groups do not prove broad generalization or absence of pretraining contamination.
+
+    python scripts/experiment_balanced_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --threads 4
+
+The experiment retains a private synthetic dataset, preregistration, adapter and result manifest. It compares exact output labels using the same prompts and greedy decoding for base and adapter and verifies reloaded-adapter generation. For interpretation also inspect case-normalized outcomes: strict schema scoring marks `Matched` invalid, even though it is semantically the matched label. Do not treat the scores or a saved adapter as a promotion decision.
+
+A separate out-of-template synthetic challenge uses negative and large amounts, comma separators, missing fields, and currency mismatches. After the balanced adapter has been trained, set `FOUNDRY_TRAIN_RUN` to its run directory and execute:
+
+    python scripts/challenge_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+
+The fixed challenge records and scoring protocol are saved before inference, not independently timestamped or signed. Both base and frozen adapter see identical inputs; the challenge is no longer unseen after use and must not be used for training or checkpoint selection. Incomplete amounts or different currencies require `review_required`; an incorrect `matched` output on those cases is an unsafe suggestion. The model cannot authorize anything. `PYTHONPATH=src python -m hardonian_foundry.cli policy-demo` runs a separate synthetic-only deterministic gate; the `assess_with_suggestion` function compares an untrusted model label without letting it alter the deterministic category. This gate always requires human review, performs no financial writes, and is not wired into a production service.
+
+Not implemented: checkpoint/resume, dataset imports, QLoRA, GPU training, resource reservation, a full adversarial evaluation, production serving and promotion. DPO, distillation and RLVR are not implemented. Do not bypass these limitations by calling the adapter a trained product.

@@ -8,7 +8,7 @@ from .baseline import dataset, evaluate, evaluate_agents, reconciliation, verify
 def main():
     parser = argparse.ArgumentParser(prog="foundry", description="Offline synthetic review-gated baseline; not a trained model")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("doctor"); sub.add_parser("demo"); sub.add_parser("eval")
+    sub.add_parser("doctor"); sub.add_parser("demo"); sub.add_parser("eval"); sub.add_parser("policy-demo")
     provider = sub.add_parser("provider", help="opt-in synthetic loopback provider probe")
     provider.add_argument("--origin", required=True, help="numeric loopback HTTP origin with port")
     provider.add_argument("--model", required=True)
@@ -18,6 +18,10 @@ def main():
     elif args.command == "demo":
         result = {"reconciliation":reconciliation(dataset()[0]), "agent_allowed_proposal":verify_trace({"id":"synthetic-allow", "tool":"read_record", "arguments":{"record_id":"synthetic-record"}}), "agent_denied":verify_trace({"id":"synthetic-deny", "tool":"shell", "arguments":{}}), "evaluation":evaluate()}
     elif args.command == "eval": result = {"reconciliation": evaluate(), "agent_verifier": evaluate_agents()}
+    elif args.command == "policy-demo":
+        from .synthetic_policy import assess
+        result = assess({"id": "synthetic-policy-demo", "expected_minor": 100,
+                         "actual_minor": None, "expected_currency": "USD", "actual_currency": "USD"})
     elif args.command == "provider":
         from .provider import suggest
         try:
