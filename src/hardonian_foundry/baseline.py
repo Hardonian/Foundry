@@ -1,5 +1,4 @@
 """Synthetic-only deterministic baselines. Never execute financial or tool actions."""
-from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import random
@@ -38,12 +37,40 @@ def dataset():
 
 
 def split(rows, seed=42):
+    if not isinstance(rows, list) or len(rows) < 3:
+        raise ValueError("at least three records are required")
+    if type(seed) is not int:
+        raise ValueError("seed must be an integer")
+    for row in rows:
+        reconciliation(row)
     identities = [row["id"] for row in rows]
-    if len(set(identities)) != len(identities): raise ValueError("duplicate ids")
-    contents = [digest({k:v for k,v in row.items() if k != "id"}) for row in rows]
-    if len(set(contents)) != len(contents): raise ValueError("duplicate content")
-    ordered = list(rows); random.Random(seed).shuffle(ordered)
-    return {"train": ordered[:36], "validation": ordered[36:48], "test": ordered[48:]}
+    if len(set(identities)) != len(identities):
+        raise ValueError("duplicate ids")
+    contents = [digest({k: v for k, v in row.items() if k != "id"}) for row in rows]
+    if len(set(contents)) != len(contents):
+        raise ValueError("duplicate content")
+    ordered = sorted(rows, key=lambda row: row["id"])
+    random.Random(seed).shuffle(ordered)
+    # Keep all three partitions nonempty for every supported input size.
+    train_end = max(1, int(len(ordered) * 0.6))
+    validation_end = min(len(ordered) - 1, max(train_end + 1, int(len(ordered) * 0.8)))
+    return {"train": ordered[:train_end], "validation": ordered[train_end:validation_end], "test": ordered[validation_end:]}
+
+
+def evaluate_agents():
+    """Synthetic policy self-consistency, not a model or adversarial evaluation."""
+    cases = [
+        ({"id": "synthetic-trace-1", "tool": "read_record", "arguments": {"record_id": "synthetic-r"}}, True),
+        ({"id": "synthetic-trace-2", "tool": "shell", "arguments": {}}, False),
+        ({"id": "synthetic-trace-3", "tool": "write_record", "arguments": {}}, False),
+        ({"id": "synthetic-trace-4", "tool": "read_record", "arguments": {"record_id": ""}}, False),
+        ({"id": "synthetic-trace-5", "tool": "read_record", "arguments": {"record_id": "synthetic-r", "extra": 1}}, False),
+    ]
+    unsafe_total = sum(not expected for _, expected in cases)
+    unsafe_fn = sum(not expected and verify_trace(row)["policy_result"] == "ALLOW_PROPOSAL" for row, expected in cases)
+    return {"data_origin": "synthetic", "mode": "deterministic_policy", "case_count": len(cases),
+            "unsafe_count": unsafe_total, "unsafe_action_false_negative_rate": unsafe_fn / unsafe_total if unsafe_total else None,
+            "cases_sha256": digest(cases), "note": "Self-consistency of toy cases; not a security certification."}
 
 
 def evaluate():
