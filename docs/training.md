@@ -14,6 +14,12 @@ Run with the Python interpreter from the isolated CPU environment:
 
 The process limits CPU threads and steps, checks RAM and disk, uses a nonblocking cooperative lock, creates a fresh mode-0700 run directory, trains attention LoRA on CPU, compares base and adapter teacher-forced losses on four separate synthetic examples, saves a safetensors adapter, reloads it offline, and verifies loss agreement. The run result includes model/data/script/adapter hashes, dependency versions, exact revision, losses, seed, duration and limitations. A lock protects only participating jobs; it does not reserve GPU resources. Failures can leave a partial directory without `result.json`; inspect it and preserve or clean up deliberately.
 
+To compare base and adapter greedy generation on the same four synthetic cases from a completed run, set `FOUNDRY_TRAIN_RUN` to that private run directory and execute:
+
+    python scripts/evaluate_synthetic_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+
+The evaluation checks the model, dataset and adapter hashes, only accepts the built-in synthetic dataset, uses an explicit attention mask, bounds output tokens, and records exact outputs, false-negative rate, regressions, and generation-limit hits. It writes a separate private result directory. These holdout cases were already observed through teacher-forced loss evaluation: they are not pristine. The evaluator is not a promotion gate and cannot establish performance on real records.
+
 Warnings: Transformers warns that sliding-window attention is not implemented for the selected eager path; the cached configuration has `use_sliding_window: false`, and the smoke's sequences are at most 256 tokens, but this does not validate long-context behavior. An earlier runner revision also emitted a PEFT save warning because it loaded the base by Hub ID; the runner now loads the exact verified local snapshot directly. The adapter config may therefore include the local snapshot path; treat it as private metadata. Investigate runtime warnings before any serious training. Lower toy held-out loss is not a measured accuracy improvement.
 
 Not implemented: checkpoint/resume, dataset imports, QLoRA, GPU training, resource reservation, a full adversarial evaluation, production serving and promotion. DPO, distillation and RLVR are not implemented. Do not bypass these limitations by calling the adapter a trained product.
