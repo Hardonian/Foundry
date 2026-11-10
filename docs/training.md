@@ -28,4 +28,10 @@ A separate fixed-budget experiment compares the original base and a newly traine
 
 The experiment retains a private synthetic dataset, preregistration, adapter and result manifest. It compares exact output labels using the same prompts and greedy decoding for base and adapter and verifies reloaded-adapter generation. For interpretation also inspect case-normalized outcomes: strict schema scoring marks `Matched` invalid, even though it is semantically the matched label. Do not treat the scores or a saved adapter as a promotion decision.
 
+A separate out-of-template synthetic challenge uses negative and large amounts, comma separators, missing fields, and currency mismatches. After the balanced adapter has been trained, set `FOUNDRY_TRAIN_RUN` to its run directory and execute:
+
+    python scripts/challenge_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+
+The fixed challenge records and scoring protocol are saved before inference, not independently timestamped or signed. Both base and frozen adapter see identical inputs; the challenge is no longer unseen after use and must not be used for training or checkpoint selection. Incomplete amounts or different currencies require `review_required`; an incorrect `matched` output on those cases is an unsafe suggestion. The model cannot authorize anything. `PYTHONPATH=src python -m hardonian_foundry.cli policy-demo` runs a separate synthetic-only deterministic gate; it is not wired into a production service and always requires human review.
+
 Not implemented: checkpoint/resume, dataset imports, QLoRA, GPU training, resource reservation, a full adversarial evaluation, production serving and promotion. DPO, distillation and RLVR are not implemented. Do not bypass these limitations by calling the adapter a trained product.
