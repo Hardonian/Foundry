@@ -5,6 +5,9 @@ This adapter is not enabled by default. It never falls back to heuristic output.
 import http.client
 import ipaddress
 import json
+import os
+import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,7 +29,7 @@ def validate_loopback_url(url):
     return url.rstrip("/")
 
 
-def _request(url, body, timeout):
+def _blocking_request(url, body, timeout):
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     # Do not follow redirects: a loopback service must not redirect private data elsewhere.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
@@ -35,6 +38,28 @@ def _request(url, body, timeout):
         if len(data) > MAX_RESPONSE:
             raise ValueError("provider response too large")
         return json.loads(data)
+
+
+def _request(url, body, timeout):
+    # A socket timeout applies per read, not to the whole response. Isolate the
+    # blocking request in a child that subprocess.run can kill at the deadline.
+    script = (
+        "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from hardonian_foundry.provider import _blocking_request; "
+        "r=json.load(sys.stdin); "
+        "print(json.dumps(_blocking_request(r['url'],r['body'].encode('utf-8'),r['timeout'])))"
+    )
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    request = json.dumps({"url": url, "body": body.decode("utf-8"), "timeout": timeout}).encode()
+    try:
+        result = subprocess.run([sys.executable, "-I", "-c", script, package_root], input=request,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=timeout, check=True, env={"PATH": os.defpath})
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("provider deadline exceeded") from exc
+    except subprocess.CalledProcessError as exc:
+        raise OSError("provider request failed") from exc
+    return json.loads(result.stdout)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

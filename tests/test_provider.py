@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -34,6 +35,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         response = {"choices": [{"message": {"content": json.dumps({"category": "amount_mismatch"})}}]}
         body = json.dumps(response).encode()
+        if self.mode == "trickle":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                for byte in body:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.04)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -70,6 +83,13 @@ class ProviderTest(unittest.TestCase):
                 result = suggest(CASE, origin=self.origin, model="synthetic-model")
                 self.assertEqual(result["status"], "UNAVAILABLE")
                 self.assertNotIn("category", result)
+
+    def test_trickle_response_has_total_deadline(self):
+        Handler.mode = "trickle"
+        started = time.monotonic()
+        result = suggest(CASE, origin=self.origin, model="synthetic-model", timeout=0.2)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(result["status"], "UNAVAILABLE")
 
     def test_bad_schema_and_timeout(self):
         def invalid(*_):
