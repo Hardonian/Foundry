@@ -104,5 +104,5 @@ def suggest(case, *, origin, model, timeout=3.0, transport=_request):
     except urllib.error.HTTPError as exc:
         exc.close()
         return {"status": "UNAVAILABLE", "mode": "local_provider", "data_origin": "synthetic", "review_required": True}
-    except (OSError, TimeoutError, ValueError, KeyError, TypeError, http.client.HTTPException):
+    except (OSError, TimeoutError, ValueError, KeyError, TypeError, RecursionError, http.client.HTTPException):
         return {"status": "UNAVAILABLE", "mode": "local_provider", "data_origin": "synthetic", "review_required": True}
