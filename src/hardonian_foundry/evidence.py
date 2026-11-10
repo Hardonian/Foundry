@@ -22,6 +22,22 @@ MAX_KEY = 128
 
 
 def _canonical(record):
+    # JSON object keys must already be strings: implicit key conversion changes
+    # sort order or creates collisions when the entry is loaded again.
+    pending = [record]
+    seen = set()
+    while pending:
+        value = pending.pop()
+        if isinstance(value, (dict, list, tuple)):
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("JSON object keys must be strings")
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple)):
+            pending.extend(value)
     return json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 

@@ -104,6 +104,12 @@ class EvidenceTest(unittest.TestCase):
                 evidence.append(self.path, bad)
         self.assertFalse(os.path.exists(self.path))
 
+    def test_nested_non_string_keys_rejected_before_write(self):
+        for nested in ({2: 1, 10: 2}, {"inner": [{1: "bad"}]}, ( {2: "bad"}, )):
+            with self.subTest(nested=nested), self.assertRaises(ValueError):
+                evidence.append(self.path, {"data_origin": "synthetic", "counts": nested})
+        self.assertFalse(os.path.exists(self.path))
+
     def test_bad_keys_rejected(self):
         for bad in ("", "  ", "x" * 129):
             with self.assertRaises(ValueError):
