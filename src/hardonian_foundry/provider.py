@@ -51,10 +51,14 @@ def _request(url, body, timeout):
     )
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     request = json.dumps({"url": url, "body": body.decode("utf-8"), "timeout": timeout}).encode()
+    child_env = {"PATH": os.defpath}
+    for var in ("SYSTEMROOT", "SYSTEMDRIVE"):
+        if var in os.environ:
+            child_env[var] = os.environ[var]
     try:
         result = subprocess.run([sys.executable, "-I", "-c", script, package_root], input=request,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                timeout=timeout, check=True, env={"PATH": os.defpath})
+                                timeout=timeout, check=True, env=child_env)
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError("provider deadline exceeded") from exc
     except subprocess.CalledProcessError as exc:

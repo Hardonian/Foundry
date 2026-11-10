@@ -4,7 +4,6 @@ Requires an existing compatible CPU-only PyTorch/Transformers/PEFT environment
 and the pinned model in a local Hugging Face cache. Never downloads models.
 """
 import argparse
-import fcntl
 import hashlib
 import json
 import math
@@ -13,6 +12,11 @@ import random
 import shutil
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 MODEL = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
 REVISION = "ea3f2471cf1b1f0db85067f1ef93848e38e88c25"
@@ -91,7 +95,8 @@ def main():
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SystemExit("another participating Foundry training job holds the lock") from exc
         run(args, cache, root, snap)

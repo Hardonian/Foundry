@@ -3,12 +3,16 @@
 Never train or select checkpoints on this challenge. No promotion or production use.
 """
 import argparse
-import fcntl
 import hashlib
 import json
 import os
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from evaluate_synthetic_lora import verify_adapter_hashes
 from experiment_balanced_lora import preflight
@@ -112,7 +116,8 @@ def main():
     fd = os.open(root / ".training.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SystemExit("another participating job holds the lock") from exc
         run_eval(args, root, cache, snap, adapter, manifest, challenge)
