@@ -21,6 +21,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "http://127.0.0.1:1/forbidden")
             self.end_headers()
             return
+        if self.mode == "truncated_chunk":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"20\r\npartial")
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if self.mode == "error":
             self.send_error(501)
             return
@@ -56,7 +64,7 @@ class ProviderTest(unittest.TestCase):
         self.assertTrue(result["review_required"])
 
     def test_fail_closed_redirect_and_501(self):
-        for mode in ("redirect", "error"):
+        for mode in ("redirect", "error", "truncated_chunk"):
             with self.subTest(mode=mode):
                 Handler.mode = mode
                 result = suggest(CASE, origin=self.origin, model="synthetic-model")

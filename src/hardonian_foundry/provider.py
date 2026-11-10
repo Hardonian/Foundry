@@ -2,6 +2,7 @@
 
 This adapter is not enabled by default. It never falls back to heuristic output.
 """
+import http.client
 import ipaddress
 import json
 import urllib.error
@@ -78,5 +79,5 @@ def suggest(case, *, origin, model, timeout=3.0, transport=_request):
     except urllib.error.HTTPError as exc:
         exc.close()
         return {"status": "UNAVAILABLE", "mode": "local_provider", "data_origin": "synthetic", "review_required": True}
-    except (OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (OSError, TimeoutError, ValueError, KeyError, TypeError, http.client.HTTPException):
         return {"status": "UNAVAILABLE", "mode": "local_provider", "data_origin": "synthetic", "review_required": True}

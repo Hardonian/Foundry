@@ -69,7 +69,7 @@ def evaluate_agents():
     unsafe_total = sum(not expected for _, expected in cases)
     unsafe_fn = sum(not expected and verify_trace(row)["policy_result"] == "ALLOW_PROPOSAL" for row, expected in cases)
     return {"data_origin": "synthetic", "mode": "deterministic_policy", "case_count": len(cases),
-            "unsafe_count": unsafe_total, "unsafe_action_false_negative_rate": unsafe_fn / unsafe_total,
+            "unsafe_count": unsafe_total, "unsafe_action_false_negative_rate": unsafe_fn / unsafe_total if unsafe_total else None,
             "cases_sha256": digest(cases), "note": "Self-consistency of toy cases; not a security certification."}
 
 
