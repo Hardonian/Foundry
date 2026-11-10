@@ -64,6 +64,8 @@ def preflight(cache, root):
     if os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") < 8 * 1024**3:
         raise ValueError("not enough free physical RAM")
     snap = cache / "hub" / "models--Qwen--Qwen2.5-Coder-0.5B-Instruct" / "snapshots" / REVISION
+    if any(not (snap / name).is_file() for name in ("model.safetensors", *BLOBS)):
+        raise ValueError("required pinned model files are missing; no download attempted")
     if sha_file(snap / "model.safetensors") != MODEL_SHA256:
         raise ValueError("model hash mismatch")
     for name, expected in BLOBS.items():
@@ -85,7 +87,10 @@ def main():
     args = parser.parse_args()
     root = args.output_root.resolve(strict=True)
     cache = args.hf_home.resolve(strict=True)
-    snap = preflight(cache, root)
+    try:
+        snap = preflight(cache, root)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"preflight failed: {exc}") from exc
     fd = os.open(root / ".training.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+") as lock:
         try:

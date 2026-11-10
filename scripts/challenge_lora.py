@@ -89,7 +89,10 @@ def main():
     run = args.run_dir.resolve(strict=True)
     if not run.is_dir() or run.stat().st_uid != os.getuid() or run.stat().st_mode & 0o077:
         raise SystemExit("training run must be an owner-only directory")
-    snap = preflight(cache, root)
+    try:
+        snap = preflight(cache, root)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"preflight failed: {exc}") from exc
     manifest = json.loads((run / "result.json").read_text())
     if manifest.get("status") != "completed" or manifest.get("model") != MODEL or manifest.get("revision") != REVISION:
         raise SystemExit("training manifest mismatch")
