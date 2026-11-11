@@ -282,9 +282,7 @@ class TaskPromotionTests(unittest.TestCase):
                 changed = json.loads(json.dumps(original))
                 if field == "evaluation":
                     changed["evaluation"] = value
-                elif field == "f1":
-                    changed["evaluation"][field] = value
-                elif field == "task":
+                elif field in ("f1", "task"):
                     changed["evaluation"][field] = value
                 elif field == "macro_f1":
                     changed["evaluation"]["task"]["baseline"][field] = value
