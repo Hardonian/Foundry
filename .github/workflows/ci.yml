@@ -49,6 +49,12 @@ jobs:
           tests/test_tenancy.py
           tests/test_refinery.py
           tests/test_task_mode.py
+          examples/case-study-exception-codes/generate_dataset.py
+          examples/case-study-exception-codes/baseline_predict.py
+          examples/case-study-exception-codes/train_lora.py
+          examples/case-study-exception-codes/model_predict.py
+          examples/case-study-exception-codes/finalize_spec.py
+          examples/case-study-exception-codes/show_pubkey.py
       - name: Bandit (medium and above)
         run: bandit -q -r src --severity-level medium
       - name: Pip audit

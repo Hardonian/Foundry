@@ -1,0 +1,28 @@
+{
+  "baseline_must_improve": true,
+  "dataset_path": "data.jsonl",
+  "description": "Classify operator adjudication notes into Settler resolution codes. Synthetic, family-disjoint. Critical codes REOPENED_FOR_INVESTIGATION and MISSING_COUNTERPART_CONFIRMED must never be missed. UNDETERMINED is the honest no-codeable-content class.",
+  "labels": [
+    "DUPLICATE_RECORD_CONFIRMED",
+    "TIMING_DIFFERENCE_ACCEPTED",
+    "AMOUNT_VARIANCE_ACCEPTED",
+    "CURRENCY_VARIANCE_ACCEPTED",
+    "MISSING_COUNTERPART_CONFIRMED",
+    "FALSE_POSITIVE_CONFIRMED",
+    "REOPENED_FOR_INVESTIGATION",
+    "UNDETERMINED"
+  ],
+  "model": {
+    "adapter_name": "exception-codes-lora",
+    "adapter_sha256": "7a867d837114f6406e1b984c3fe776bfcaf5b5356dd34384e96128e340e53548",
+    "base_model_id": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    "revision": "ea3f2471cf1b1f0db85067f1ef93848e38e88c25"
+  },
+  "notes": "Dataset generated deterministically by generate_dataset.py (BASE_SEED=20261110).",
+  "schema_version": "1.0",
+  "split_seed": 20261110,
+  "task_id": "settler-exception-resolution-codes",
+  "thresholds": {
+    "macro_f1_min": 0.8
+  }
+}

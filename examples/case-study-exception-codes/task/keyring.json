@@ -1,0 +1,8 @@
+{
+  "trusted_keys": [
+    {
+      "label": "case-study",
+      "public_key_hex": "435c4ca03849dbba69b4db08bc429ea87d352a756b59a86ca377a13774c3d426"
+    }
+  ]
+}

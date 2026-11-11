@@ -1,0 +1,11 @@
+{
+  "adapter_sha256": "7a867d837114f6406e1b984c3fe776bfcaf5b5356dd34384e96128e340e53548",
+  "dataset_sha256": "7ab44a108ccdc4264b06499e88c2579c11a133208fc4f603f2be5d90bda47472",
+  "decoding": "greedy",
+  "duration_seconds": 418.0,
+  "exact_allowlist_outputs": 384,
+  "mapped_to_undetermined": 0,
+  "max_new_tokens": 12,
+  "test_records": 384,
+  "threads": 12
+}

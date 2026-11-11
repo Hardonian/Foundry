@@ -1,0 +1,23 @@
+{
+  "evidence_summary": {
+    "critical_fn_rate": 0.0,
+    "evaluation_f1": 1.0,
+    "preflight_status": "PASSED",
+    "provenance_status": "PROVENANCE_VERIFIED",
+    "task_baseline_macro_f1": 0.7875,
+    "task_model_macro_f1": 1.0
+  },
+  "missing_evidence": [
+    "cryptographic_promotion_signature",
+    "model_licensing_manifest"
+  ],
+  "note": "Promotion is fail-closed: any missing or unverified evidence blocks promotion with exit code 2.",
+  "promoted": false,
+  "reasons": [
+    "no model licensing manifest provided for promotion",
+    "no promotion signature entry bound to this run in the verified ledger"
+  ],
+  "review_required": true,
+  "run_id": "run-20261111T031107Z-6a0895d1",
+  "status": "BLOCKED"
+}

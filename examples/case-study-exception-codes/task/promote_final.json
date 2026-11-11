@@ -1,0 +1,24 @@
+{
+  "evidence_summary": {
+    "critical_fn_rate": 0.0,
+    "evaluation_f1": 1.0,
+    "licensing_decision": "ALLOWED",
+    "licensing_source": "evidence_ledger",
+    "preflight_status": "PASSED",
+    "promotion_signature": {
+      "entry_hash": "afec55be62830848546618c87b3c29508e0aa05eb3bbdb0d2750164aead2408e",
+      "public_key_hex": "435c4ca03849dbba69b4db08bc429ea87d352a756b59a86ca377a13774c3d426",
+      "signed_head": "93844bb27be0e3509a6a3b361c718f2275e555d60fae70286a53ef6a7d83bfd3"
+    },
+    "provenance_status": "PROVENANCE_VERIFIED",
+    "task_baseline_macro_f1": 0.7875,
+    "task_model_macro_f1": 1.0
+  },
+  "missing_evidence": [],
+  "note": "All evidence gates verified against the tamper-evident ledger at the signed head. Promotion attests evidence completeness only: deployment remains an explicit human decision.",
+  "promoted": true,
+  "reasons": [],
+  "review_required": true,
+  "run_id": "run-20261111T031107Z-6a0895d1",
+  "status": "ALLOWED_REVIEW_REQUIRED"
+}

@@ -180,9 +180,9 @@ def split_task_dataset(records, spec):
         members.sort(key=lambda r: r["id"])
     ordered_keys = _digest_order(list(groups), seed)
     n_groups = len(ordered_keys)
-    train_count = max(1, int(n_groups * 0.6))
-    train_count = min(train_count, n_groups - 2)
-    validation_count = max(1, n_groups - train_count - 1)
+    train_count = min(max(1, int(n_groups * 0.6)), n_groups - 2)
+    validation_count = max(1, int(n_groups * 0.15))
+    validation_count = min(validation_count, n_groups - train_count - 1)
     split_at = (train_count, train_count + validation_count)
     buckets = {"train": ordered_keys[:split_at[0]],
                "validation": ordered_keys[split_at[0]:split_at[1]],
