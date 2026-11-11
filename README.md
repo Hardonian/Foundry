@@ -15,24 +15,16 @@ AI pipelines treat model promotion as a vibe check: the loss curve looked fine, 
 
 Foundry makes that evidence the gate. Dataset validation, preflight safety/licensing/resource checks, hash-chained run records, and a promotion verdict that refuses to say yes without required evidence artifacts.
 
-Promotion is the interesting output. Today, even a fully green run produces this:
+Promotion is the interesting output. Missing or invalid evidence blocks it;
+eligible task-mode runs can produce `ALLOWED_REVIEW_REQUIRED`, not automatic
+promotion. See [the refinery documentation](docs/refinery.md) for the gates.
 
-```jsonc
-{
-  "promoted": false,
-  "status": "BLOCKED",
-  "missing_evidence": [
-    "cryptographic_promotion_signature",
-    "model_licensing_manifest"
-  ],
-  "reasons": [
-    "Signed provenance, license, security and benchmark gates are not implemented.",
-    "no model licensing manifest provided for promotion"
-  ]
-}
-```
-
-The gate is honest about what it does not yet accept. That honesty is the product.
+**Security:** v0.2.0's promotion gate is vulnerable; upgrade to v0.2.1 and
+reassess its promotion decisions. Legacy signatures are blocked: create a new
+run, supply or attach an allowed license before signing, then sign and promote
+the new run. A signature binds supplied evidence, not actual model weights,
+predictor execution, or the truth of a license claim. Detecting ledger rollback
+requires a trusted external head/checkpoint. See the [changelog](CHANGELOG.md).
 
 ## What works today
 
@@ -48,7 +40,7 @@ Every command below is verified by CI (`offline-baseline`) on every push:
 | `foundry refinery inspect <run_id>` | Re-verify a run against the evidence ledger |
 | `foundry refinery promote <run_id>` | Fail-closed promotion verdict with explicit missing-evidence reasons |
 
-86 unit tests. Zero network calls. Runs offline on CPU.
+The baseline runs offline on CPU without network calls.
 
 ## Quick start
 
@@ -61,7 +53,9 @@ python3 -m venv .venv && .venv/bin/pip install .
 ```
 
 Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry.cli <command>`.
-The package name `hardonian-foundry` is reserved for PyPI publication; until then install from the [latest release](https://github.com/Hardonian/Foundry/releases/latest) wheel.
+The package name `hardonian-foundry` is reserved for PyPI publication. Check the
+[release version](https://github.com/Hardonian/Foundry/releases) before installing
+a wheel; v0.2.0 remains vulnerable and may still be the latest published release.
 
 ## Documentation
 
