@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hardonian-foundry"
-version = "0.1.0"
-description = "Offline-first, review-gated synthetic evaluation baseline"
+version = "0.2.0"
+description = "Evidence-first model lifecycle: tamper-evident runs and fail-closed promotion gates"
 requires-python = ">=3.11"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+
+[project.optional-dependencies]
+signing = ["cryptography>=42.0"]
 
 [project.scripts]
 foundry = "hardonian_foundry.cli:main"

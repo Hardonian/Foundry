@@ -98,23 +98,54 @@ Evaluates whether a candidate model run possesses all required evidence for prom
 - **Run Metadata:** `run.json` exists and parses cleanly.
 - **Provenance Proof:** Evidence ledger verifies with `PROVENANCE_VERIFIED`.
 - **Preflight:** Training preflight passed cleanly.
-- **Benchmarks:** Evaluation metrics present, `critical_false_negative_rate == 0.0`, `review_rate == 1.0`, `f1 >= 0.8`.
-- **License Allowlist:** Model manifest present and SPDX approved.
-- **Signed Promotion:** Cryptographic signing authority token.
+- **Benchmarks:** Evaluation metrics present, `critical_false_negative_rate == 0.0`, `review_rate == 1.0`, `f1 >= 0.8`. For task-mode runs (`mode == "task_predictor_pair"`), macro-F1 must clear `thresholds.macro_f1_min` (default 0.8) and strictly beat the recorded baseline when `baseline_must_improve` is set.
+- **License Allowlist:** Model manifest bound into the ledger via `attach-license` and SPDX approved.
+- **Signed Promotion:** An Ed25519 signature over the exact ledger head, verified against a trusted keyring supplied with `--keyring`.
 
-When required evidence is missing, the gate reports the exact missing items in `missing_evidence` and exits with code 2. Because cryptographic promotion signatures are not yet implemented in Foundry, promotion always fails closed.
+When any required evidence is missing or unverified, the gate reports the exact missing items in `missing_evidence` and exits with code 2. When everything verifies, the decision is `ALLOWED_REVIEW_REQUIRED` (exit 0) — a human still signs off; the gate never auto-promotes.
 
 Command:
 ```sh
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote <run_id> --output-root .foundry/runs
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote <run_id> --output-root .foundry/runs [--keyring keyring.json]
+```
+
+### 6. Task-Mode Evaluation (bring-your-own predictors)
+Task mode scores *externally produced* predictions against a frozen task contract — Foundry never calls the model itself, so any predictor (heuristic, LoRA adapter, hosted model) can be evaluated under identical, auditable rules.
+
+- **Task spec** (`spec.json`): `task_id`, `labels`, `thresholds` (`macro_f1_min` >= 0.8 floor), `baseline_must_improve`, `split_seed`, and a `model` block pinning `base_model_id`, `revision`, and `adapter_sha256` into run provenance.
+- **Dataset** (JSONL): `{"id", "prompt", "gold_label", "critical", "family"}`. Validation rejects duplicate ids/prompts, unknown labels, and mixed family presence. Splits are deterministic and **group-disjoint** (~60/15/25 by family), so no template family ever crosses a split boundary.
+- **Predictions** (JSONL): `{"id", "label"}` for the test split, produced by the baseline predictor and the candidate. Coverage must be exact — missing or extra ids fail closed.
+- **Metrics:** per-class precision/recall/F1, macro-F1, accuracy, and `critical_false_negative_rate` over records flagged `critical` (e.g. reopen/escalate classes that must never be silently coded benign). Runs with zero critical test cases report `null` and block promotion — coverage cannot be assumed.
+
+Commands:
+```sh
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery validate-dataset --task-spec spec.json
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery run --task-spec spec.json \
+  --baseline-predictions baseline.jsonl --model-predictions model.jsonl --output-root .foundry/runs
+```
+
+### 7. Signing & Keyring (`keygen`, `attach-license`, `sign`)
+Promotion attestations are Ed25519 signatures over the canonical ledger head (`signing.py`):
+- `keygen` creates a new private key file (refuses to overwrite; file mode forced to 0600).
+- `attach-license <run_id> --manifest m.json` binds the SPDX allowlist decision into the ledger (once per run).
+- `sign <run_id> --key-file k.pem` appends a `promotion_signature` entry covering every ledger entry up to that head (once per run).
+- `promote --keyring keyring.json` verifies the signature against trusted public keys (64-char lowercase hex). A signature from an untrusted key, or any ledger mutation after signing, breaks chain verification and blocks promotion.
+
+Security posture: the optional `cryptography` backend is **fail-closed** — without the `signing` extra, `sign` errors out and `promote` reports `cryptographic_promotion_signature` as missing evidence. Private key material is file-based, mode 0600, and never logged or embedded into run records.
+
+```sh
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery keygen --key-file sign.pem
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery attach-license <run_id> --manifest manifest.json --output-root .foundry/runs
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery sign <run_id> --key-file sign.pem --output-root .foundry/runs
 ```
 
 ---
 
 ## Remaining Gaps and Future Work
 
-- **Cryptographic Signing:** Digital signatures (e.g. Sigstore / Ed25519) for evidence chain heads and promotion attestations.
 - **Trained Model Registry:** Durable, encrypted artifact store for validated model checkpoints and LoRA adapters.
 - **Live Inference Gateway:** Sandboxed, authenticated model router with timeout and circuit-breaking controls.
 - **Adversarial Evaluation:** Expanded challenge sets beyond template-generated synthetic cases.
+
+Completed in 0.2.0: cryptographic signing (Ed25519 over ledger heads + trusted keyring), licensing-manifest and benchmark promotion gates.
 

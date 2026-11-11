@@ -1,0 +1,362 @@
+"""Task-mode tests: spec validation, family-disjoint splits, prediction scoring,
+license attachment, Ed25519 signing, and the promotion gate end-to-end."""
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from hardonian_foundry import signing
+from hardonian_foundry.baseline import digest
+from hardonian_foundry.refinery import (
+    attach_license,
+    create_task_run,
+    evaluate_promotion,
+    inspect_run,
+    load_keyring,
+    sign_run,
+)
+from hardonian_foundry.task_eval import (
+    score_predictions,
+    split_task_dataset,
+    validate_spec,
+    validate_task_dataset,
+)
+
+LABELS = ["ALPHA", "BETA", "GAMMA"]
+GOOD_SPEC = {
+    "schema_version": "1.0",
+    "task_id": "test-exception-codes",
+    "description": "Synthetic exception-code classification contract test.",
+    "labels": LABELS,
+    "thresholds": {"macro_f1_min": 0.8},
+    "baseline_must_improve": True,
+    "split_seed": 7,
+    "model": {
+        "base_model_id": "Qwen/Qwen2.5-Coder-0.5B",
+        "revision": "0123456789abcdef",
+        "adapter_sha256": "a" * 64,
+        "adapter_name": "test-adapter",
+    },
+    "dataset_path": "data.jsonl",
+}
+ALLOWED_MANIFEST = {
+    "name": "qwen2.5-coder-0.5b-test-adapter",
+    "license_id": "Apache-2.0",
+    "provenance": "synthetic",
+    "data_origin": "synthetic",
+}
+
+
+def make_records(count=30, families=6):
+    rows = []
+    for i in range(count):
+        family = i % families
+        block = i // families
+        rows.append({
+            "id": f"case-{i:03d}",
+            "prompt": f"operator note variant {i}: reviewed the record and closed it accordingly",
+            "gold_label": LABELS[block % len(LABELS)],
+            # every family gets critical rows, so any test split exercises the
+            # critical-false-negative gate regardless of family ordering.
+            "critical": block % 2 == 0,
+            "family": f"template-{family}",
+        })
+    return rows
+
+
+def build_task_dir(root, records, spec=None):
+    spec = spec or GOOD_SPEC
+    (Path(root) / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    with (Path(root) / "data.jsonl").open("w", encoding="utf-8") as handle:
+        for row in records:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    return spec
+
+
+def predictions_for(test_rows, strategy="gold"):
+    if strategy == "gold":
+        return [{"id": row["id"], "label": row["gold_label"]} for row in test_rows]
+    return [{"id": row["id"], "label": LABELS[0]} for row in test_rows]
+
+
+class SpecValidationTests(unittest.TestCase):
+    def test_good_spec_valid(self):
+        self.assertEqual(validate_spec(GOOD_SPEC), [])
+
+    def test_duplicate_labels_rejected(self):
+        bad = json.loads(json.dumps(GOOD_SPEC))
+        bad["labels"] = ["ALPHA", "ALPHA"]
+        self.assertIn("labels must be unique", validate_spec(bad))
+
+    def test_adapter_sha_must_be_hex64(self):
+        bad = json.loads(json.dumps(GOOD_SPEC))
+        bad["model"]["adapter_sha256"] = "ZZ"
+        self.assertIn("model.adapter_sha256 must be 64-char lowercase hex", validate_spec(bad))
+
+    def test_threshold_below_floor_rejected(self):
+        bad = json.loads(json.dumps(GOOD_SPEC))
+        bad["thresholds"] = {"macro_f1_min": 0.1}
+        self.assertIn("macro_f1_min must be a number in [0.8, 1.0]", validate_spec(bad))
+
+    def test_traversal_dataset_path_rejected(self):
+        bad = json.loads(json.dumps(GOOD_SPEC))
+        bad["dataset_path"] = "../outside.jsonl"
+        self.assertIn("dataset_path must be a relative, traversal-free path <= 1024 chars", validate_spec(bad))
+
+
+class DatasetValidationTests(unittest.TestCase):
+    def test_valid_records(self):
+        result = validate_task_dataset(make_records(), GOOD_SPEC)
+        self.assertEqual(result["status"], "VALID")
+        self.assertTrue(result["family_disjoint"])
+
+    def test_duplicate_ids_detected(self):
+        rows = make_records()
+        rows[1]["id"] = rows[0]["id"]
+        errors = validate_task_dataset(rows, GOOD_SPEC)["errors"]
+        self.assertTrue(any("duplicate record id" in e for e in errors))
+
+    def test_gold_label_outside_spec(self):
+        rows = make_records()
+        rows[3]["gold_label"] = "OMEGA"
+        errors = validate_task_dataset(rows, GOOD_SPEC)["errors"]
+        self.assertTrue(any("not in spec labels" in e for e in errors))
+
+    def test_family_mixing_rejected(self):
+        rows = make_records()
+        del rows[2]["family"]
+        errors = validate_task_dataset(rows, GOOD_SPEC)["errors"]
+        self.assertTrue(any("'family' must be present on all records or none" in e for e in errors))
+
+    def test_duplicate_prompt_leakage(self):
+        rows = make_records()
+        rows[5]["prompt"] = rows[4]["prompt"]
+        errors = validate_task_dataset(rows, GOOD_SPEC)["errors"]
+        self.assertTrue(any("leakage hazard" in e for e in errors))
+
+
+class SplitTests(unittest.TestCase):
+    def test_family_disjoint_and_deterministic(self):
+        rows = make_records()
+        first = split_task_dataset(rows, GOOD_SPEC)
+        second = split_task_dataset(rows, GOOD_SPEC)
+        for name in ("train", "validation", "test"):
+            self.assertEqual([r["id"] for r in first[name]], [r["id"] for r in second[name]])
+        families = {name: {r["family"] for r in first[name]} for name in first}
+        self.assertFalse(families["train"] & families["validation"])
+        self.assertFalse(families["train"] & families["test"])
+        self.assertFalse(families["validation"] & families["test"])
+        total = sum(len(first[name]) for name in first)
+        self.assertEqual(total, len(rows))
+        for name in first:
+            self.assertGreater(len(first[name]), 0)
+
+
+class ScoringTests(unittest.TestCase):
+    def test_golden_macro_f1(self):
+        rows = [
+            {"id": "a", "prompt": "x", "gold_label": "ALPHA", "critical": False},
+            {"id": "b", "prompt": "y", "gold_label": "ALPHA", "critical": False},
+            {"id": "c", "prompt": "z", "gold_label": "BETA", "critical": True},
+            {"id": "d", "prompt": "w", "gold_label": "BETA", "critical": False},
+        ]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        spec["labels"] = ["ALPHA", "BETA"]
+        preds = [{"id": "a", "label": "ALPHA"}, {"id": "b", "label": "ALPHA"},
+                 {"id": "c", "label": "BETA"}, {"id": "d", "label": "ALPHA"}]
+        metrics = score_predictions(rows, preds, spec)
+        self.assertAlmostEqual(metrics["accuracy"], 0.75)
+        # ALPHA: tp=2 fp=1 fn=0 -> p=2/3 r=1 f1=0.8 ; BETA: tp=1 fp=0 fn=1 -> p=1 r=0.5 f1=2/3
+        self.assertAlmostEqual(metrics["per_class"]["ALPHA"]["f1"], 0.8, places=12)
+        self.assertAlmostEqual(metrics["per_class"]["BETA"]["f1"], 2 / 3, places=12)
+        self.assertAlmostEqual(metrics["macro_f1"], (0.8 + 2 / 3) / 2, places=12)
+        self.assertEqual(metrics["critical_false_negative_rate"], 0.0)
+        self.assertEqual(metrics["critical_total"], 1)
+
+    def test_critical_miss_rate(self):
+        rows = [
+            {"id": "a", "prompt": "x", "gold_label": "ALPHA", "critical": True},
+            {"id": "b", "prompt": "y", "gold_label": "BETA", "critical": False},
+        ]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        spec["labels"] = ["ALPHA", "BETA"]
+        preds = [{"id": "a", "label": "BETA"}, {"id": "b", "label": "BETA"}]
+        metrics = score_predictions(rows, preds, spec)
+        self.assertEqual(metrics["critical_false_negative_rate"], 1.0)
+
+    def test_prediction_coverage_fail_closed(self):
+        rows = [{"id": "a", "prompt": "x", "gold_label": "ALPHA", "critical": False}]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        with self.assertRaises(ValueError):
+            score_predictions(rows, [], spec)
+        with self.assertRaises(ValueError):
+            score_predictions(rows, [{"id": "a", "label": "OMEGA"}], spec)
+
+
+@unittest.skipUnless(signing.backend_available(), "signing extra unavailable")
+class TaskPromotionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.records = make_records()
+        self.spec = build_task_dir(self.root, self.records)
+        splits = split_task_dataset(self.records, self.spec)
+        self.baseline = self.root / "baseline.jsonl"
+        self.model = self.root / "model.jsonl"
+        self._write(self.baseline, predictions_for(splits["test"], "constant"))
+        self._write(self.model, predictions_for(splits["test"], "gold"))
+        self.runs = str(self.root / "runs")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _write(path, preds):
+        with path.open("w", encoding="utf-8") as handle:
+            for row in preds:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def _create_run(self):
+        return create_task_run(
+            task_spec=self.spec,
+            dataset_records=self.records,
+            baseline_predictions=[json.loads(line) for line in self.baseline.read_text().splitlines()],
+            model_predictions=[json.loads(line) for line in self.model.read_text().splitlines()],
+            output_root=self.runs,
+        )
+
+    def test_full_promotion_path(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        self.assertEqual(inspect_run(run_id, output_root=self.runs)["provenance_status"], "PROVENANCE_VERIFIED")
+        self.assertEqual(run["schema_version"], "1.1")
+        self.assertEqual(run["evaluation"]["mode"], "task_predictor_pair")
+        self.assertEqual(run["evaluation"]["f1"], 1.0)
+        self.assertEqual(run["evaluation"]["critical_false_negative_rate"], 0.0)
+
+        blocked = evaluate_promotion(run_id, output_root=self.runs)
+        self.assertFalse(blocked["promoted"])
+        self.assertIn("model_licensing_manifest", blocked["missing_evidence"])
+        self.assertIn("cryptographic_promotion_signature", blocked["missing_evidence"])
+
+        attach = attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        self.assertEqual(attach["decision"], "ALLOWED")
+
+        key_path = str(self.root / "sign.pem")
+        generated = signing.generate_keypair(key_path)
+        keyring_path = self.root / "keyring.json"
+        keyring_path.write_text(json.dumps({"trusted_keys": [
+            {"label": "test", "public_key_hex": generated["public_key_hex"]},
+        ]}), encoding="utf-8")
+
+        signed = sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        self.assertEqual(len(signed["signed_head"]), 64)
+
+        promo = evaluate_promotion(run_id, output_root=self.runs, keyring=load_keyring(str(keyring_path)))
+        self.assertTrue(promo["promoted"])
+        self.assertEqual(promo["status"], "ALLOWED_REVIEW_REQUIRED")
+        self.assertTrue(promo["review_required"])
+        self.assertEqual(promo["missing_evidence"], [])
+
+    def test_signed_but_no_keyring_blocks(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "sign.pem")
+        signing.generate_keypair(key_path)
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        promo = evaluate_promotion(run_id, output_root=self.runs)
+        self.assertFalse(promo["promoted"])
+        self.assertIn("trusted_promotion_keyring", promo["missing_evidence"])
+
+    def test_untrusted_key_blocks(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "sign.pem")
+        signing.generate_keypair(key_path)
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        other = signing.generate_keypair(str(self.root / "other.pem"))
+        promo = evaluate_promotion(run_id, output_root=self.runs, keyring=[other["public_key_hex"]])
+        self.assertFalse(promo["promoted"])
+        self.assertIn("verified_promotion_signature", promo["missing_evidence"])
+
+    def test_no_improvement_over_baseline_blocks(self):
+        splits = split_task_dataset(self.records, self.spec)
+        self._write(self.model, predictions_for(splits["test"], "constant"))
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "sign.pem")
+        generated = signing.generate_keypair(key_path)
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        promo = evaluate_promotion(run_id, output_root=self.runs,
+                                   keyring=[generated["public_key_hex"]])
+        self.assertFalse(promo["promoted"])
+        self.assertIn("baseline_improvement", promo["missing_evidence"])
+        self.assertIn("task_macro_f1_threshold", promo["missing_evidence"])
+
+    def test_denied_license_blocks(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        denied = dict(ALLOWED_MANIFEST, license_id="GPL-3.0-only")
+        attach = attach_license(run_id, manifest=denied, output_root=self.runs)
+        self.assertEqual(attach["decision"], "DENIED")
+        promo = evaluate_promotion(run_id, output_root=self.runs)
+        self.assertFalse(promo["promoted"])
+        self.assertIn("approved_spdx_license", promo["missing_evidence"])
+
+    def test_ledger_tampering_after_sign_blocks(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "sign.pem")
+        generated = signing.generate_keypair(key_path)
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        keyring = [generated["public_key_hex"]]
+
+        ledger = Path(self.runs) / "evidence.jsonl"
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+        mutated = []
+        for line in lines:
+            entry = json.loads(line)
+            if entry.get("record", {}).get("type") == "model_licensing_manifest":
+                entry["record"]["manifest_sha256"] = "f" * 64
+                line = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+            mutated.append(line)
+        ledger.write_text("\n".join(mutated) + "\n", encoding="utf-8")
+
+        promo = evaluate_promotion(run_id, output_root=self.runs, keyring=keyring)
+        self.assertFalse(promo["promoted"])
+        self.assertIn("tamper_evident_proof", promo["missing_evidence"])
+
+    def test_world_readable_key_rejected(self):
+        run = self._create_run()
+        key_path = str(self.root / "loose.pem")
+        signing.generate_keypair(key_path)
+        os.chmod(key_path, 0o644)
+        with self.assertRaises(ValueError):
+            sign_run(run["run_id"], private_key_path=key_path, output_root=self.runs)
+
+    def test_double_sign_and_double_license_rejected(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        with self.assertRaises(ValueError):
+            attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "sign.pem")
+        signing.generate_keypair(key_path)
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        with self.assertRaises(ValueError):
+            sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+
+    def test_run_and_attach_hashes_are_bound(self):
+        run = self._create_run()
+        run_id = run["run_id"]
+        attach = attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        self.assertEqual(attach["manifest_sha256"], digest(ALLOWED_MANIFEST))
+
+
+if __name__ == "__main__":
+    unittest.main()
