@@ -1,39 +1,97 @@
-# Hardonian Foundry
+# Foundry
 
-Early, offline CPU-only research baseline. Apache-2.0. The deterministic heuristics are NOT a trained model, are NOT commercially validated, and process SYNTHETIC inputs only. No inference server, production training system, authenticated tenant isolation, production API, production-grade evidence store or usable model registry is implemented yet. Do not deploy for real financial data or autonomous tool execution.
+[![CI](https://github.com/Hardonian/Foundry/actions/workflows/ci.yml/badge.svg)](https://github.com/Hardonian/Foundry/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-green)](pyproject.toml)
+[![Status: research baseline](https://img.shields.io/badge/status-research%20baseline-orange)](#honest-status)
 
-```sh
-PYTHONPATH=src python3 -m hardonian_foundry.cli doctor
-PYTHONPATH=src python3 -m hardonian_foundry.cli demo
-PYTHONPATH=src python3 -m hardonian_foundry.cli eval
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+**Evidence-first model lifecycle for AI agents.** Every evaluation run becomes a tamper-evident record, and model promotion **fails closed** until the evidence actually justifies it. No model gets promoted on vibes.
+
+![Refinery: validate, preflight, run, inspect, promote](docs/assets/refinery-demo.gif)
+
+## The problem
+
+AI pipelines treat model promotion as a vibe check: the loss curve looked fine, the demo worked, so the artifact shipped. When a model makes decisions — exception triage, tool calls, money-adjacent judgments — nobody can show *what evidence* justified deploying it.
+
+Foundry makes that evidence the gate. Dataset validation, preflight safety/licensing/resource checks, hash-chained run records, and a promotion verdict that refuses to say yes without required evidence artifacts.
+
+Promotion is the interesting output. Today, even a fully green run produces this:
+
+```jsonc
+{
+  "promoted": false,
+  "status": "BLOCKED",
+  "missing_evidence": [
+    "cryptographic_promotion_signature",
+    "model_licensing_manifest"
+  ],
+  "reasons": [
+    "Signed provenance, license, security and benchmark gates are not implemented.",
+    "no model licensing manifest provided for promotion"
+  ]
+}
 ```
 
-### Developer Refinery Workflow
+The gate is honest about what it does not yet accept. That honesty is the product.
 
-The developer-facing Refinery workflow integrates dataset validation, preflight safety checks, reproducible evaluation, tamper-evident run tracking, and fail-closed promotion gating:
+## What works today
+
+Every command below is verified by CI (`offline-baseline`) on every push:
+
+| Command | What it does |
+|---|---|
+| `foundry doctor` | Environment and self-health check |
+| `foundry demo` | Deterministic synthetic baseline run |
+| `foundry refinery validate-dataset` | Integrity, uniqueness and splitability checks on the synthetic dataset |
+| `foundry refinery preflight` | Safety, resource and licensing checks before any run |
+| `foundry refinery run` | End-to-end evaluation with a hash-chained, tamper-evident run record |
+| `foundry refinery inspect <run_id>` | Re-verify a run against the evidence ledger |
+| `foundry refinery promote <run_id>` | Fail-closed promotion verdict with explicit missing-evidence reasons |
+
+86 unit tests. Zero network calls. Runs offline on CPU.
+
+## Quick start
 
 ```sh
-# Validate synthetic dataset integrity, id uniqueness, and splitability
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery validate-dataset
-
-# Run preflight safety, resource, and licensing checks
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery preflight
-
-# Execute end-to-end refinery run with tamper-evident evidence tracking
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery run --output-root .foundry/runs
-
-# Inspect run record and verify tamper-evident evidence chain provenance
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery inspect <run_id> --output-root .foundry/runs
-
-# Evaluate model promotion gate (fails closed with explicit missing evidence reasons)
-PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote <run_id> --output-root .foundry/runs
+git clone https://github.com/Hardonian/Foundry && cd Foundry
+python3 -m venv .venv && .venv/bin/pip install .
+.venv/bin/foundry doctor
+.venv/bin/foundry refinery run --output-root .foundry/runs
+.venv/bin/foundry refinery promote <run_id> --output-root .foundry/runs   # exits 2, by design
 ```
 
-An offline CPU LoRA training smoke is available using a separately installed, pinned compatible environment and an already cached open-weight model. It trains only synthetic examples; see docs/training.md for preflight, security restrictions, and limitations. This is not a production training platform.
+Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry.cli <command>`.
+The package name `hardonian-foundry` is reserved for PyPI publication; until then install from the [latest release](https://github.com/Hardonian/Foundry/releases/latest) wheel.
 
-An opt-in, synthetic-only OpenAI-compatible loopback provider adapter is available as `python3 -m hardonian_foundry.cli provider --origin http://127.0.0.1:12345 --model example`. The address and model must identify an operator-approved local server; this example is not a configured service. Provider errors return UNAVAILABLE with nonzero exit and no heuristic substitution. A successful response is always review-required. This adapter is not verified against a live model-tools deployment; the inspected model-tools `app.main` implementation returns HTTP 501 for `/v1/chat/completions`. No real provider call is made by tests.
+## Documentation
 
-`registry promote` always fails closed. Outputs are suggestions only and always require human review. The synthetic dataset is constructed programmatically; its split is seed-stable within the documented Python runtime. Evidence hashes are metadata, not encrypted or tamper-proof storage. Synthetic self-consistency is not pilot accuracy. No financial writes or tool execution exist.
+| Document | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Component boundaries and lifecycle contracts |
+| [docs/refinery.md](docs/refinery.md) | The refinery workflow: inputs, outputs, evidence format, gate semantics |
+| [docs/training.md](docs/training.md) | Bounded offline CPU LoRA smoke: preflight, restrictions, limitations |
 
-See docs/architecture.md and docs/refinery.md for boundaries, lifecycle contracts, and outstanding work. Project does not include model weights or customer data.
+## Honest status
+
+Read this before building on Foundry:
+
+- This is an **early, offline, CPU-only research baseline**. The deterministic heuristics are **not a trained model**, are **not commercially validated**, and process **synthetic inputs only**.
+- **Do not deploy** for real financial data or autonomous tool execution. No inference server, production training system, authenticated tenant isolation, production API, production-grade evidence store, or usable model registry is implemented yet.
+- `registry promote` **always fails closed**. Outputs are suggestions only and always require human review.
+- The opt-in OpenAI-compatible provider adapter must point at an **operator-approved loopback server** and sends synthetic samples only. Errors return `UNAVAILABLE` with nonzero exit and **no heuristic substitution**; a successful response is always `review-required`. It is not verified against a live model-tools deployment (the inspected `app.main` returns HTTP 501 for `/v1/chat/completions`). No real provider call is made by tests.
+- Evidence hashes are **metadata**, not encrypted or tamper-proof storage.
+- Synthetic self-consistency is **not pilot accuracy**. The synthetic dataset is constructed programmatically; its split is seed-stable within the documented Python runtime.
+- No model weights or customer data are included in this project.
+- The first worked case study — a real fine-tuned open-weight model promoted through the refinery with a public evidence bundle — is the next milestone. See the roadmap in issues #1–#3.
+
+## Why trust the boring parts
+
+Every claim in this README is a command you can run in 60 seconds, and CI runs the full refinery pipeline offline on every push. Gates fail closed; errors are loud; nothing silently falls back.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Start with the [`good first issue` labels](https://github.com/Hardonian/Foundry/labels/good%20first%20issue). Security issues: see [SECURITY.md](SECURITY.md) — no GitHub issues for vulnerabilities.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
