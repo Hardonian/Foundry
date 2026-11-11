@@ -5,6 +5,7 @@ Synthetic-only research baseline. Never deploy for real financial data or autono
 """
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -23,8 +24,9 @@ from .baseline import (
 from .baseline import (
     dataset as default_dataset,
 )
+from .evidence import _append_with_builder as evidence_append_with_builder
 from .evidence import append as evidence_append
-from .evidence import verify as evidence_verify
+from .evidence import verify_entries as evidence_verify_entries
 from .licensing import evaluate as evaluate_license
 from .task_eval import (
     score_predictions,
@@ -319,7 +321,7 @@ def create_run(*, output_root=None, dataset=None, model_manifest=None, seed=42):
     return run_record
 
 
-def inspect_run(run_id, *, output_root=None):
+def inspect_run(run_id, *, output_root=None, _include_snapshot=False):
     """Inspect a tracked run and cryptographically verify its tamper-evident evidence chain."""
     root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
     run_file = root_dir / run_id / "run.json"
@@ -328,6 +330,10 @@ def inspect_run(run_id, *, output_root=None):
 
     with open(run_file, "r", encoding="utf-8") as handle:
         run_record = json.load(handle)
+    if (not isinstance(run_record, dict)
+            or not isinstance(run_record.get("provenance"), dict)
+            or not isinstance(run_record.get("preflight"), dict)):
+        raise TypeError("run metadata requires provenance and preflight objects")
 
     ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
     expected_entry_hash = run_record.get("provenance", {}).get("evidence_entry_hash")
@@ -336,18 +342,17 @@ def inspect_run(run_id, *, output_root=None):
     provenance_status = "UNKNOWN"
     ledger_report = None
     matched_entry = None
+    ledger_entries = []
 
     if ledger_path and os.path.isfile(ledger_path):
-        ledger_report = evidence_verify(ledger_path)
+        with open(ledger_path, "r", encoding="utf-8") as handle:
+            ledger_entries = [json.loads(line) for line in handle if line.strip()]
+        ledger_report = evidence_verify_entries(ledger_entries)
         if ledger_report["status"] == "OK":
-            with open(ledger_path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    entry = json.loads(line)
-                    if entry.get("key") == run_id or entry.get("entry_hash") == expected_entry_hash:
-                        matched_entry = entry
-                        break
+            for entry in ledger_entries:
+                if entry.get("key") == run_id or entry.get("entry_hash") == expected_entry_hash:
+                    matched_entry = entry
+                    break
             if matched_entry and matched_entry.get("entry_hash") == expected_entry_hash and matched_entry.get("seq") == expected_seq:
                 rec = matched_entry.get("record", {})
                 eval_obj = run_record.get("evaluation", {})
@@ -369,7 +374,7 @@ def inspect_run(run_id, *, output_root=None):
     else:
         provenance_status = "LEDGER_NOT_FOUND"
 
-    return {
+    result = {
         "run_id": run_id,
         "status": run_record.get("status"),
         "created_at": run_record.get("created_at"),
@@ -382,6 +387,10 @@ def inspect_run(run_id, *, output_root=None):
         "matched_entry": matched_entry,
         "model_manifest": run_record.get("model_manifest"),
     }
+    if _include_snapshot:
+        result["run_record"] = run_record
+        result["ledger_entries"] = ledger_entries
+    return result
 
 
 def evaluate_promotion(run_id, *, output_root=None, keyring=None):
@@ -413,8 +422,9 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
         }
 
     try:
-        inspection = inspect_run(run_id, output_root=str(root_dir))
-    except (FileNotFoundError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        inspection = inspect_run(run_id, output_root=str(root_dir), _include_snapshot=True)
+        digest(inspection["run_record"])  # Reject non-canonical values before evaluating evidence.
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         missing_evidence.append("run_inspection_failed")
         reasons.append(f"failed to inspect run: {exc}")
         return {
@@ -433,11 +443,24 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     if inspection["provenance_status"] != "PROVENANCE_VERIFIED":
         missing_evidence.append("tamper_evident_proof")
         reasons.append(f"provenance verification failed: {inspection['provenance_status']}")
+    # Never consume attachment or signature records from an invalid ledger snapshot.
+    if inspection.get("ledger_report") and inspection["ledger_report"].get("status") != "OK":
+        return {
+            "promoted": False,
+            "status": "BLOCKED",
+            "run_id": run_id,
+            "reasons": reasons,
+            "missing_evidence": missing_evidence,
+            "evidence_summary": evidence_summary,
+        }
 
     # Gate 3: Training preflight must have passed
     if inspection.get("preflight_status") != "PASSED":
         missing_evidence.append("passed_preflight")
         reasons.append("training preflight did not pass")
+
+    def valid_rate(value):
+        return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
 
     # Gate 4: Evaluation benchmarks
     eval_metrics = inspection.get("evaluation")
@@ -450,18 +473,18 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
         evidence_summary["evaluation_f1"] = f1
         evidence_summary["critical_fn_rate"] = cfn_rate
 
-        if cfn_rate is None:
+        if not valid_rate(cfn_rate):
             missing_evidence.append("critical_case_coverage")
             reasons.append("evaluation lacks critical test cases (critical false negative rate is undefined)")
         elif cfn_rate != 0.0:
             missing_evidence.append("zero_critical_false_negatives")
             reasons.append(f"critical false negative rate ({cfn_rate}) exceeds zero tolerance")
 
-        if eval_metrics.get("review_rate") != 1.0:
+        if not valid_rate(eval_metrics.get("review_rate")) or eval_metrics.get("review_rate") != 1.0:
             missing_evidence.append("mandatory_human_review_policy")
             reasons.append("evaluation does not enforce 100% human review policy")
 
-        if f1 is None:
+        if not valid_rate(f1):
             missing_evidence.append("positive_case_coverage")
             reasons.append("evaluation lacks positive/mismatch cases (f1 score is undefined)")
         elif f1 < 0.8:
@@ -469,14 +492,35 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             reasons.append(f"f1 score ({f1}) does not meet benchmark threshold")
 
     # Gate 4b: Task-mode benchmark contract (stricter than the global floor)
-    if eval_metrics and eval_metrics.get("mode") == "task_predictor_pair":
-        task_block = eval_metrics.get("task", {})
-        baseline_f1 = (task_block.get("baseline") or {}).get("macro_f1")
-        model_f1 = (task_block.get("model_metrics") or {}).get("macro_f1")
-        spec_min = (task_block.get("thresholds") or {}).get("macro_f1_min", 0.8)
+    if isinstance(eval_metrics, dict) and eval_metrics.get("mode") == "task_predictor_pair":
+        task_block = eval_metrics.get("task")
+        if not isinstance(task_block, dict):
+            task_block = {}
+        labels = task_block.get("labels")
+        for metrics in (task_block.get("baseline"), task_block.get("model_metrics")):
+            if (not isinstance(labels, list) or not labels
+                    or any(not isinstance(label, str) or not label.strip() for label in labels)
+                    or len(set(labels)) != len(labels) or not isinstance(metrics, dict)
+                    or not isinstance(metrics.get("per_class"), dict)
+                    or set(metrics["per_class"]) != set(labels)
+                    or any(not isinstance(metrics["per_class"].get(label), dict)
+                           or not isinstance(metrics["per_class"][label].get("support"), int)
+                           or isinstance(metrics["per_class"][label].get("support"), bool)
+                           or metrics["per_class"][label]["support"] <= 0 for label in labels)):
+                missing_evidence.append("task_label_coverage")
+                reasons.append("task test split lacks positive support for every contract label")
+                break
+        baseline = task_block.get("baseline")
+        model = task_block.get("model_metrics")
+        thresholds = task_block.get("thresholds")
+        baseline_f1 = baseline.get("macro_f1") if isinstance(baseline, dict) else None
+        model_f1 = model.get("macro_f1") if isinstance(model, dict) else None
+        spec_min = thresholds.get("macro_f1_min", 0.8) if isinstance(thresholds, dict) else None
         evidence_summary["task_baseline_macro_f1"] = baseline_f1
         evidence_summary["task_model_macro_f1"] = model_f1
-        if baseline_f1 is None or model_f1 is None:
+        if (not valid_rate(baseline_f1) or not valid_rate(model_f1)
+                or not valid_rate(spec_min)
+                or not isinstance(task_block.get("baseline_must_improve", True), bool)):
             missing_evidence.append("task_benchmark_metrics")
             reasons.append("task run lacks baseline or model macro_f1 metrics")
         else:
@@ -490,9 +534,14 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     # Gate 5: Model manifest and SPDX licensing (run record or ledger attachment)
     model_manifest = inspection.get("model_manifest")
     license_source = "run_record" if model_manifest is not None else None
+    attached = None
     ledger_path = inspection.get("provenance", {}).get("evidence_ledger_path")
     if model_manifest is None and ledger_path:
-        attached = _find_ledger_entry(ledger_path, run_id, "model_licensing_manifest")
+        attachments = [entry for entry in inspection["ledger_entries"]
+                       if isinstance(entry, dict) and isinstance(entry.get("record"), dict)
+                       and entry["record"].get("type") == "model_licensing_manifest"
+                       and entry["record"].get("run_id") == run_id]
+        attached = attachments[-1] if attachments else None
         if attached:
             record = attached.get("record", {})
             stored = record.get("manifest")
@@ -515,7 +564,10 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             reasons.append(f"model licensing check failed: {'; '.join(lic_result['reasons'])}")
 
     # Gate 6: Cryptographic signed promotion authority (Ed25519 bound to ledger head)
-    signature_entries = _iter_ledger_entries(ledger_path, run_id, "promotion_signature") if ledger_path else []
+    signature_entries = [entry for entry in inspection["ledger_entries"]
+                         if isinstance(entry, dict) and isinstance(entry.get("record"), dict)
+                         and entry["record"].get("type") == "promotion_signature"
+                         and entry["record"].get("run_id") == run_id]
     if not signature_entries:
         missing_evidence.append("cryptographic_promotion_signature")
         reasons.append("no promotion signature entry bound to this run in the verified ledger")
@@ -528,7 +580,7 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     else:
         try:
             trusted = signing.normalize_trusted_keys(keyring)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             trusted = []
             missing_evidence.append("trusted_promotion_keyring")
             reasons.append(f"invalid trusted keyring: {exc}")
@@ -537,13 +589,23 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             record = entry.get("record", {})
             signed_head = record.get("signed_head")
             message = canonical({
+                "version": "2",
                 "run_id": run_id,
                 "signed_head": signed_head,
                 "created_at": record.get("created_at"),
+                "run_sha256": digest(inspection["run_record"]),
             }).encode("utf-8")
             pub = record.get("public_key_hex")
+            if record.get("version") != "2" or record.get("run_sha256") != digest(inspection["run_record"]):
+                reasons.append("signature does not bind the complete current run record")
+                continue
             if entry.get("prev_hash") != signed_head:
                 reasons.append("signature does not bind the ledger head at its signing position")
+                continue
+            if (inspection["matched_entry"] is None
+                    or inspection["matched_entry"]["seq"] >= entry["seq"]
+                    or (license_source == "evidence_ledger" and attached["seq"] >= entry["seq"])):
+                reasons.append("signature does not cover the selected run and license evidence")
                 continue
             if not isinstance(pub, str) or pub not in trusted:
                 reasons.append("signature key is not in the trusted keyring")
@@ -560,7 +622,7 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             }
         else:
             missing_evidence.append("verified_promotion_signature")
-            reasons.append("no promotion signature verified against the trusted keyring")
+            reasons.append("no promotion signature verified against the trusted keyring; if the signature is legacy or predates license evidence, recreate the run, attach an allowed license, and sign the new run")
 
     promoted = not missing_evidence
     return {
@@ -652,34 +714,54 @@ def sign_run(run_id, *, private_key_path, output_root=None):
     ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
     if not ledger_path or not os.path.isfile(ledger_path):
         raise ValueError("evidence ledger not found for run")
-    report = evidence_verify(ledger_path)
-    if report["status"] != "OK":
-        raise ValueError(f"refusing to sign a ledger that does not verify: {report['status']}")
-    if _find_ledger_entry(ledger_path, run_id, "promotion_signature"):
-        raise ValueError(f"run already signed: {run_id}")
-    signed_head = report["head"]
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    message = canonical({"run_id": run_id, "signed_head": signed_head, "created_at": timestamp}).encode("utf-8")
-    public_hex = signing.public_key_hex(private_key_path)
-    signature_hex = signing.sign(message, private_key_path)
-    entry = evidence_append(
-        ledger_path,
-        {
+
+    def build_signature(entries, signed_head):
+        if any(isinstance(entry.get("record"), dict)
+               and entry["record"].get("type") == "promotion_signature"
+               and entry["record"].get("run_id") == run_id for entry in entries):
+            raise ValueError(f"run already signed: {run_id}; recreate the run, attach an allowed license, and sign the new run")
+        manifest = run_record.get("model_manifest")
+        if manifest is None:
+            attachments = [entry["record"] for entry in entries
+                           if isinstance(entry.get("record"), dict)
+                           and entry["record"].get("type") == "model_licensing_manifest"
+                           and entry["record"].get("run_id") == run_id]
+            if attachments:
+                attachment = attachments[-1]
+                manifest = attachment.get("manifest")
+                if not isinstance(manifest, dict) or attachment.get("manifest_sha256") != digest(manifest):
+                    manifest = None
+        if evaluate_license(manifest)["decision"] != "ALLOWED":
+            raise ValueError("signing requires an allowed license first; attach an allowed license or recreate the run")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        run_sha256 = digest(run_record)
+        message = canonical({"version": "2", "run_id": run_id, "signed_head": signed_head,
+                             "created_at": timestamp, "run_sha256": run_sha256}).encode("utf-8")
+        public_hex = signing.public_key_hex(private_key_path)
+        signature_hex = signing.sign(message, private_key_path)
+        return {
             "data_origin": "synthetic",
             "type": "promotion_signature",
+            "version": "2",
             "run_id": run_id,
             "signed_head": signed_head,
+            "run_sha256": run_sha256,
             "public_key_hex": public_hex,
             "signature_hex": signature_hex,
             "created_at": timestamp,
             "signing_backend": signing.SIGNING_BACKEND,
-        },
-        key=f"{run_id}#sig",
-    )
+        }
+
+    try:
+        entry = evidence_append_with_builder(ledger_path, build_signature, key=f"{run_id}#sig")
+    except ValueError as exc:
+        if str(exc) == "duplicate idempotency key":
+            raise ValueError("run already signed or signature key occupied; recreate the run, attach an allowed license, and sign the new run") from exc
+        raise
     return {
         "run_id": run_id,
-        "signed_head": signed_head,
-        "public_key_hex": public_hex,
+        "signed_head": entry["record"]["signed_head"],
+        "public_key_hex": entry["record"]["public_key_hex"],
         "entry_hash": entry["entry_hash"],
         "entry_seq": entry["seq"],
     }

@@ -78,6 +78,11 @@ def _load_lines(path):
 
 def append(path, record, *, key=None):
     """Append one review-only record; refuse to append onto a corrupted chain."""
+    _validate_record(record, key)
+    return _append_with_builder(path, lambda entries, head: record, key=key)
+
+
+def _validate_record(record, key):
     if not isinstance(record, dict) or not record:
         raise ValueError("record must be a nonempty dict")
     if key is not None and (not isinstance(key, str) or not key.strip() or len(key) > MAX_KEY):
@@ -85,16 +90,20 @@ def append(path, record, *, key=None):
     if record.get("data_origin") != "synthetic":
         raise ValueError("record must declare synthetic data_origin")
     _canonical(record)  # rejects non-JSON values and NaN before any write
+
+
+def _append_with_builder(path, builder, *, key=None):
+    """Build and append against one verified head under the shared sidecar lock."""
     lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | _O_NOFOLLOW, 0o600)
     with os.fdopen(lock_fd, "r+") as lock:
         _lock(lock)
         try:
-            return _append_locked(path, record, key)
+            return _append_locked(path, builder, key)
         finally:
             _unlock(lock)
 
 
-def _append_locked(path, record, key):
+def _append_locked(path, builder, key):
     entries = []
     try:
         lines = _load_lines(path)
@@ -109,6 +118,8 @@ def _append_locked(path, record, key):
     if key is not None and any(entry.get("key") == key for entry in entries):
         raise ValueError("duplicate idempotency key")
     prev = entries[-1]["entry_hash"] if entries else GENESIS
+    record = builder(entries, prev)
+    _validate_record(record, key)
     seq = len(entries) + 1
     entry = {
         "seq": seq,

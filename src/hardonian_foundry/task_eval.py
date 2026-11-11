@@ -221,7 +221,7 @@ def score_predictions(test_rows, predictions, spec):
     labels_present = sorted({row["gold_label"] for row in test_rows})
     per_class = {}
     macro_sum = 0.0
-    for label in labels_present:
+    for label in sorted(label_set):
         tp = sum(1 for row in test_rows if row["gold_label"] == label and preds[row["id"]] == label)
         fp = sum(1 for row in test_rows if row["gold_label"] != label and preds[row["id"]] == label)
         fn = sum(1 for row in test_rows if row["gold_label"] == label and preds[row["id"]] != label)
@@ -231,7 +231,7 @@ def score_predictions(test_rows, predictions, spec):
         per_class[label] = {"precision": precision, "recall": recall, "f1": f1,
                             "support": tp + fn}
         macro_sum += f1
-    macro_f1 = macro_sum / len(labels_present) if labels_present else None
+    macro_f1 = macro_sum / len(label_set) if label_set else None
     correct = sum(1 for row in test_rows if preds[row["id"]] == row["gold_label"])
     critical_rows = [row for row in test_rows if row["critical"]]
     critical_misses = sum(1 for row in critical_rows if preds[row["id"]] != row["gold_label"])

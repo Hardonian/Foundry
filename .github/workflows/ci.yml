@@ -30,6 +30,10 @@ jobs:
         # pip>=26.2 first: pip-audit project mode audits the ephemeral env, which
         # bootstraps with the host pip; older pip versions carry known CVEs.
         run: python -m pip install --quiet --upgrade 'pip>=26.2' && python -m pip install --quiet ruff==0.17.4 bandit==1.9.4 pip-audit==2.10.1 'cryptography==50.0.2'
+      - name: Signed promotion regression tests
+        run: |
+          PYTHONPATH=src python -c 'from hardonian_foundry.signing import backend_available; assert backend_available(), "signing backend unavailable"'
+          PYTHONPATH=src python -m unittest discover -s tests -p test_task_mode.py -v
       - name: Ruff lint (lifecycle and refinery modules)
         run: >-
           ruff check
