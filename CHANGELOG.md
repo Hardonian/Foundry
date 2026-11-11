@@ -3,7 +3,26 @@
 All notable changes to Foundry are documented here. The format is loosely
 based on Keep a Changelog; this project uses Semantic Versioning.
 
+## [0.2.1] - 2026-11-10
+
+### Security
+- Fix promotion evidence validation: version 2 signatures bind the complete
+  canonical run record and the ledger head at signing, including prior license
+  evidence. A trusted keyring is required for signature verification.
+- **The v0.2.0 release remains vulnerable:** its promotion gate can accept
+  inadequately bound evidence. Do not rely on its promotion decisions; upgrade
+  and reassess them under v0.2.1.
+- Legacy signatures are blocked, not upgraded. Signing is once per run: create
+  a new run, supply or attach an allowed license before signing, and sign the
+  new run before promoting it.
+- Signatures bind supplied evidence, not actual model weights, predictor
+  execution, or the truth of license claims. The ledger alone cannot prevent
+  rollback; detection requires a trusted external head/checkpoint.
+
 ## [0.2.0] - 2026-11-10
+
+**Security warning:** v0.2.0 promotion is vulnerable; see v0.2.1 above. The
+following describes the historical release, not a security guarantee.
 
 Task-mode evaluation and cryptographic promotion signing. The promotion gate
 can now say ALLOWED — but only when every piece of evidence verifies, and the
@@ -17,8 +36,8 @@ auto-promotes).
 - `refinery validate-dataset --task-spec` and
   `refinery run --task-spec --baseline-predictions --model-predictions`
 - Ed25519 promotion signing (`signing.py`): `refinery keygen`,
-  `refinery sign`, `refinery promote --keyring`; signatures bind to the exact
-  ledger head, so any post-signing mutation blocks promotion
+  `refinery sign`, `refinery promote --keyring`; the original signature
+  binding was incomplete, as corrected in v0.2.1
 - `refinery attach-license` binds the SPDX allowlist decision into the ledger
 - Optional `signing` extra (`pip install hardonian-foundry[signing]`);
   without it, signing fails closed and promotion reports the missing evidence

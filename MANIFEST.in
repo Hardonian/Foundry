@@ -1,0 +1,3 @@
+include CHANGELOG.md
+recursive-include docs *.md *.cast *.gif *.png
+recursive-include scripts *.py
