@@ -41,6 +41,27 @@ class ChallengeTest(unittest.TestCase):
         self.assertEqual(out["invalid_outputs"], 1)
         self.assertEqual(out["by_expected"]["review_required"]["correct"], 1)
 
+    def test_baseline_uses_structured_inputs_not_expected_labels(self):
+        rows = challenge.challenge_cases()
+        baseline = challenge.deterministic_baseline(rows)
+        self.assertEqual(challenge.summarize(baseline)["strict_correct"], 24)
+        rows[0]["expected_label"] = "amount_mismatch"
+        self.assertEqual(challenge.deterministic_baseline(rows)[0]["output"], "matched")
+
+    def test_paired_comparison_and_alignment(self):
+        baseline = [{"id": "a", "expected": "matched", "output": "matched"},
+                    {"id": "b", "expected": "matched", "output": "wrong"},
+                    {"id": "c", "expected": "matched", "output": "matched"}]
+        model = [{"id": "a", "expected": "matched", "output": "wrong"},
+                 {"id": "b", "expected": "matched", "output": "matched"},
+                 {"id": "c", "expected": "matched", "output": "matched"}]
+        self.assertEqual(challenge.compare_to_baseline(baseline, model),
+                         {"model_only_correct": 1, "baseline_only_correct": 1})
+        for bad in (model[:-1], list(reversed(model)),
+                    [{**model[0], "expected": "amount_mismatch"}, *model[1:]]):
+            with self.assertRaises(ValueError):
+                challenge.compare_to_baseline(baseline, bad)
+
 
 if __name__ == "__main__":
     unittest.main()
