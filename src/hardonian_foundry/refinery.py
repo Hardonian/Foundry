@@ -443,6 +443,16 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     if inspection["provenance_status"] != "PROVENANCE_VERIFIED":
         missing_evidence.append("tamper_evident_proof")
         reasons.append(f"provenance verification failed: {inspection['provenance_status']}")
+    # Never consume attachment or signature records from an invalid ledger snapshot.
+    if inspection.get("ledger_report") and inspection["ledger_report"].get("status") != "OK":
+        return {
+            "promoted": False,
+            "status": "BLOCKED",
+            "run_id": run_id,
+            "reasons": reasons,
+            "missing_evidence": missing_evidence,
+            "evidence_summary": evidence_summary,
+        }
 
     # Gate 3: Training preflight must have passed
     if inspection.get("preflight_status") != "PASSED":

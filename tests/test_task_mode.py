@@ -312,6 +312,21 @@ class TaskPromotionTests(unittest.TestCase):
                             "task_benchmark_metrics")
                 self.assertIn(expected, result["missing_evidence"])
 
+    def test_corrupt_ledger_with_noncanonical_attachment_is_blocked(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        ledger = Path(self.runs) / "evidence.jsonl"
+        rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+        attachment = next(row for row in rows
+                          if row.get("record", {}).get("type") == "model_licensing_manifest")
+        attachment["record"]["manifest"]["unexpected"] = float("nan")
+        ledger.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        result = evaluate_promotion(rid, output_root=self.runs)
+        self.assertFalse(result["promoted"])
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertTrue({"tamper_evident_proof", "run_inspection_failed"}
+                        & set(result["missing_evidence"]))
+
     def test_signed_run_metadata_cannot_be_changed(self):
         splits = split_task_dataset(self.records, self.spec)
         self._write(self.baseline, predictions_for(splits["test"], "gold"))
