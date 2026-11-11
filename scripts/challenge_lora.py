@@ -168,7 +168,8 @@ def run_eval(args, root, cache, snap, adapter, manifest, challenge):
                 "scoring": "exact and case-normalized labels; missing/different currency requires review",
                 "baseline": "synthetic_policy.assess on structured fields; challenge oracle encodes the same rules",
                 "do_sample": False, "max_new_tokens": 8,
-                "training_on_challenge": "not verified; exact prompt overlap checked against supplied dataset"}
+                "training_on_challenge": None,
+                "training_on_challenge_assessment": "not verified; exact prompt overlap checked against supplied dataset"}
     (output / "protocol.json").write_text(json.dumps(protocol, sort_keys=True, indent=2) + "\n")
     tokenizer, model = load_verified_snapshot(snap, AutoTokenizer, AutoModelForCausalLM, torch)
     config = GenerationConfig(do_sample=False, max_new_tokens=8, pad_token_id=tokenizer.eos_token_id,
