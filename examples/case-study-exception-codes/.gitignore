@@ -1,0 +1,5 @@
+# local-only artifacts: trained adapter, evidence runs, signing keys, logs
+task/adapter/
+task/runs/
+task/keys/
+*.log
