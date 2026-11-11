@@ -98,9 +98,9 @@ Evaluates whether a candidate model run possesses all required evidence for prom
 - **Run Metadata:** `run.json` exists and parses cleanly.
 - **Provenance Proof:** Evidence ledger verifies with `PROVENANCE_VERIFIED`.
 - **Preflight:** Training preflight passed cleanly.
-- **Benchmarks:** Evaluation metrics present, `critical_false_negative_rate == 0.0`, `review_rate == 1.0`, `f1 >= 0.8`. For task-mode runs (`mode == "task_predictor_pair"`), macro-F1 must clear `thresholds.macro_f1_min` (default 0.8) and strictly beat the recorded baseline when `baseline_must_improve` is set.
-- **License Allowlist:** Model manifest bound into the ledger via `attach-license` and SPDX approved.
-- **Signed Promotion:** An Ed25519 signature over the exact ledger head, verified against a trusted keyring supplied with `--keyring`.
+- **Benchmarks:** Evaluation metrics present, `critical_false_negative_rate == 0.0`, `review_rate == 1.0`, `f1 >= 0.8`. For task-mode runs, each contract label must have positive test support; macro-F1 averages all contract labels, must clear `thresholds.macro_f1_min` and strictly beat the recorded baseline when required.
+- **License Allowlist:** The SPDX-approved manifest must be in the signed run record or attached to the ledger before signing.
+- **Signed Promotion:** A version 2 Ed25519 signature binds the complete canonical run record and ledger head, verified against a trusted keyring supplied with `--keyring`.
 
 When any required evidence is missing or unverified, the gate reports the exact missing items in `missing_evidence` and exits with code 2. When everything verifies, the decision is `ALLOWED_REVIEW_REQUIRED` (exit 0) — a human still signs off; the gate never auto-promotes.
 
@@ -125,11 +125,13 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli refinery run --task-spec spec.js
 ```
 
 ### 7. Signing & Keyring (`keygen`, `attach-license`, `sign`)
-Promotion attestations are Ed25519 signatures over the canonical ledger head (`signing.py`):
+Promotion attestations are Ed25519 signatures over the run digest and ledger head (`signing.py`):
 - `keygen` creates a new private key file (refuses to overwrite; file mode forced to 0600).
 - `attach-license <run_id> --manifest m.json` binds the SPDX allowlist decision into the ledger (once per run).
 - `sign <run_id> --key-file k.pem` appends a `promotion_signature` entry covering every ledger entry up to that head (once per run).
-- `promote --keyring keyring.json` verifies the signature against trusted public keys (64-char lowercase hex). A signature from an untrusted key, or any ledger mutation after signing, breaks chain verification and blocks promotion.
+- `promote --keyring keyring.json` verifies the signature against trusted public keys (64-char lowercase hex). Later unrelated ledger appends are permitted; license evidence used for promotion must precede the signature.
+
+Legacy signatures do not bind the complete run and are blocked, not grandfathered. Signing is currently once per run: if an old signature exists, or a license was attached after signing, create and sign a new run with the license already present. The ledger alone does not prevent rollback without an external checkpoint. Signing attests the supplied evidence, not the actual model weights, predictor execution, or truth of a license claim.
 
 Security posture: the optional `cryptography` backend is **fail-closed** — without the `signing` extra, `sign` errors out and `promote` reports `cryptographic_promotion_signature` as missing evidence. Private key material is file-based, mode 0600, and never logged or embedded into run records.
 

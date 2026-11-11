@@ -5,9 +5,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from hardonian_foundry import signing
-from hardonian_foundry.baseline import digest
+from hardonian_foundry.baseline import canonical, digest
+from hardonian_foundry.evidence import append as append_evidence, verify as verify_evidence
 from hardonian_foundry.refinery import (
     attach_license,
     create_task_run,
@@ -225,6 +227,117 @@ class TaskPromotionTests(unittest.TestCase):
             model_predictions=[json.loads(line) for line in self.model.read_text().splitlines()],
             output_root=self.runs,
         )
+
+    def _sign(self, run_id):
+        key_path = str(self.root / "sign.pem")
+        public = signing.generate_keypair(key_path)["public_key_hex"]
+        sign_run(run_id, private_key_path=key_path, output_root=self.runs)
+        return [public]
+
+    def test_signed_run_metadata_cannot_be_changed(self):
+        splits = split_task_dataset(self.records, self.spec)
+        self._write(self.baseline, predictions_for(splits["test"], "gold"))
+        run = self._create_run()
+        rid = run["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        path = Path(self.runs) / rid / "run.json"
+        original = json.loads(path.read_text())
+        self.assertFalse(evaluate_promotion(rid, output_root=self.runs, keyring=keys)["promoted"])
+        original["evaluation"]["task"]["baseline_must_improve"] = False
+        path.write_text(json.dumps(original))
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertFalse(result["promoted"])
+        self.assertIn("verified_promotion_signature", result["missing_evidence"])
+
+    def test_signed_adapter_identity_cannot_be_changed(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        self.assertTrue(evaluate_promotion(rid, output_root=self.runs, keyring=keys)["promoted"])
+        path = Path(self.runs) / rid / "run.json"
+        changed = json.loads(path.read_text())
+        changed["evaluation"]["task"]["model_identity"]["adapter_sha256"] = "b" * 64
+        path.write_text(json.dumps(changed))
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertFalse(result["promoted"])
+        self.assertIn("verified_promotion_signature", result["missing_evidence"])
+
+    def test_license_appended_after_signature_does_not_authorize(self):
+        rid = self._create_run()["run_id"]
+        keys = self._sign(rid)
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertFalse(result["promoted"])
+        self.assertIn("verified_promotion_signature", result["missing_evidence"])
+
+    def test_evaluation_uses_verified_ledger_snapshot(self):
+        from hardonian_foundry.evidence import verify_entries
+
+        rid = self._create_run()["run_id"]
+        keys = self._sign(rid)
+
+        def append_during_verification(entries):
+            report = verify_entries(entries)
+            attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+            return report
+
+        with patch("hardonian_foundry.refinery.evidence_verify_entries", side_effect=append_during_verification):
+            result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertFalse(result["promoted"])
+        self.assertIn("model_licensing_manifest", result["missing_evidence"])
+
+    def test_missing_contract_label_blocks_promotion(self):
+        self.spec = json.loads(json.dumps(self.spec))
+        self.spec["labels"] += ["DELTA", "EPSILON", "ZETA"]
+        for row in self.records:
+            row["gold_label"] = self.spec["labels"][int(row["id"].split("-")[1]) // 6]
+        test_rows = split_task_dataset(self.records, self.spec)["test"]
+        self._write(self.baseline, predictions_for(test_rows, "constant"))
+        self._write(self.model, predictions_for(test_rows, "gold"))
+        run = self._create_run()
+        self.assertGreater(run["evaluation"]["f1"], 0.8)
+        self.assertEqual(run["evaluation"]["task"]["model_metrics"]["per_class"]["ZETA"]["support"], 0)
+        rid = run["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertFalse(result["promoted"])
+        self.assertIn("task_label_coverage", result["missing_evidence"])
+
+    def test_legacy_signature_is_blocked(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "old.pem")
+        public = signing.generate_keypair(key_path)["public_key_hex"]
+        ledger = str(Path(self.runs) / "evidence.jsonl")
+        signed_head = verify_evidence(ledger)["head"]
+        timestamp = "20260101T000000Z"
+        message = canonical({"run_id": rid, "signed_head": signed_head, "created_at": timestamp}).encode()
+        append_evidence(ledger, {"data_origin": "synthetic", "type": "promotion_signature", "run_id": rid,
+                                 "signed_head": signed_head, "created_at": timestamp,
+                                 "public_key_hex": public, "signature_hex": signing.sign(message, key_path)},
+                        key=f"{rid}#sig")
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=[public])
+        self.assertFalse(result["promoted"])
+        self.assertIn("verified_promotion_signature", result["missing_evidence"])
+
+    def test_signed_run_manifest_and_later_unrelated_ledger_entry(self):
+        test_rows = split_task_dataset(self.records, self.spec)["test"]
+        run = create_task_run(task_spec=self.spec, dataset_records=self.records,
+                              baseline_predictions=predictions_for(test_rows, "constant"),
+                              model_predictions=predictions_for(test_rows), output_root=self.runs,
+                              model_manifest=ALLOWED_MANIFEST)
+        rid = run["run_id"]
+        keys = self._sign(rid)
+        append_evidence(str(Path(self.runs) / "evidence.jsonl"),
+                        {"data_origin": "synthetic", "type": "unrelated"})
+        self.assertTrue(evaluate_promotion(rid, output_root=self.runs, keyring=keys)["promoted"])
+        path = Path(self.runs) / rid / "run.json"
+        changed = json.loads(path.read_text())
+        changed["model_manifest"]["name"] = "other-model"
+        path.write_text(json.dumps(changed))
+        self.assertFalse(evaluate_promotion(rid, output_root=self.runs, keyring=keys)["promoted"])
 
     def test_full_promotion_path(self):
         run = self._create_run()
