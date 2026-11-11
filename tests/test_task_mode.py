@@ -312,6 +312,20 @@ class TaskPromotionTests(unittest.TestCase):
                             "task_benchmark_metrics")
                 self.assertIn(expected, result["missing_evidence"])
 
+    def test_deep_ledger_and_invalid_keyring_fail_closed(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        invalid_keyring = evaluate_promotion(rid, output_root=self.runs, keyring=123)
+        self.assertFalse(invalid_keyring["promoted"])
+        self.assertIn("trusted_promotion_keyring", invalid_keyring["missing_evidence"])
+        ledger = Path(self.runs) / "evidence.jsonl"
+        ledger.write_text("[" * 10000 + "]" * 10000 + "\n")
+        result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertTrue({"run_inspection_failed", "tamper_evident_proof"}
+                        & set(result["missing_evidence"]))
+
     def test_corrupt_ledger_with_noncanonical_attachment_is_blocked(self):
         rid = self._create_run()["run_id"]
         attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)

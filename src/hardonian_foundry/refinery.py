@@ -424,7 +424,7 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     try:
         inspection = inspect_run(run_id, output_root=str(root_dir), _include_snapshot=True)
         digest(inspection["run_record"])  # Reject non-canonical values before evaluating evidence.
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         missing_evidence.append("run_inspection_failed")
         reasons.append(f"failed to inspect run: {exc}")
         return {
@@ -580,7 +580,7 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     else:
         try:
             trusted = signing.normalize_trusted_keys(keyring)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             trusted = []
             missing_evidence.append("trusted_promotion_keyring")
             reasons.append(f"invalid trusted keyring: {exc}")
