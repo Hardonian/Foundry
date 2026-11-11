@@ -3,6 +3,7 @@
 # signed chain is the point of the exercise; per-run dirs are reproducible.
 task/adapter/
 task/keys/
-task/runs/run-*/
+task/runs/run-*/*
+!task/runs/run-*/run.json
 task/runs/*.lock
 *.log
