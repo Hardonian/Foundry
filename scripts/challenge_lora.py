@@ -209,6 +209,7 @@ def run_eval(args, root, cache, snap, adapter, manifest, challenge):
                       "base": result["base"]["metrics"], "adapter": result["adapter"]["metrics"],
                       "deterministic_baseline": result["deterministic_baseline"]["metrics"],
                       "versus_deterministic_baseline": result["versus_deterministic_baseline"],
+                      "limitations": result["limitations"],
                       "duration_seconds": result["duration_seconds"]}, indent=2), flush=True)
 
 
