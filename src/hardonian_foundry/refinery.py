@@ -13,17 +13,25 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import signing
 from .baseline import (
-    dataset as default_dataset,
-)
-from .baseline import (
+    canonical,
     digest,
     reconciliation,
     split,
 )
+from .baseline import (
+    dataset as default_dataset,
+)
 from .evidence import append as evidence_append
 from .evidence import verify as evidence_verify
 from .licensing import evaluate as evaluate_license
+from .task_eval import (
+    score_predictions,
+    split_task_dataset,
+    validate_spec,
+    validate_task_dataset,
+)
 
 DEFAULT_RUNS_DIR = os.path.join(".foundry", "runs")
 
@@ -31,7 +39,7 @@ DEFAULT_RUNS_DIR = os.path.join(".foundry", "runs")
 def _code_digest():
     """Compute a deterministic hash of current refinery and baseline modules."""
     components = []
-    for mod_name in ("baseline", "evidence", "licensing", "refinery"):
+    for mod_name in ("baseline", "evidence", "licensing", "refinery", "task_eval", "signing"):
         path = os.path.join(os.path.dirname(__file__), f"{mod_name}.py")
         if os.path.isfile(path):
             with open(path, "rb") as stream:
@@ -99,7 +107,7 @@ def validate_dataset(records, *, seed=42):
     }
 
 
-def run_preflight(*, dataset=None, output_root=None, model_manifest=None):
+def run_preflight(*, dataset=None, output_root=None, model_manifest=None, task_spec=None):
     """Execute training and run preflight checks before launching a Refinery workload.
 
     Checks dataset readiness, runtime environment constraints, output directory security,
@@ -108,14 +116,19 @@ def run_preflight(*, dataset=None, output_root=None, model_manifest=None):
     checks = []
     errors = []
 
-    # 1. Dataset readiness
+    # 1. Dataset readiness (task-mode or built-in reconciliation schema)
     data = dataset if dataset is not None else default_dataset()
-    val_result = validate_dataset(data)
+    if task_spec is not None:
+        val_result = validate_task_dataset(data, task_spec)
+        detail_ok = f"{val_result['record_count']} task records validated (family_disjoint={val_result['family_disjoint']})."
+    else:
+        val_result = validate_dataset(data)
+        detail_ok = f"{val_result['record_count']} synthetic records validated with zero duplicate content."
     if val_result["status"] == "VALID":
         checks.append({
             "name": "dataset_validation",
             "status": "PASSED",
-            "details": f"{val_result['record_count']} synthetic records validated with zero duplicate content.",
+            "details": detail_ok,
         })
     else:
         err_msg = "; ".join(val_result["errors"])
@@ -371,12 +384,13 @@ def inspect_run(run_id, *, output_root=None):
     }
 
 
-def evaluate_promotion(run_id, *, output_root=None):
+def evaluate_promotion(run_id, *, output_root=None, keyring=None):
     """Evaluate fail-closed model promotion gate against required evidence and safety contracts.
 
     Checks existence, tamper-evident ledger verification, preflight completion,
-    benchmark thresholds, and SPDX licensing allowlist. Blocks promotion when any
-    evidence is missing or unverified, and always fails closed pending signed promotion.
+    benchmark thresholds, SPDX licensing (run record or ledger attachment), and
+    an Ed25519 promotion signature bound to the ledger head and validated
+    against a trusted keyring. Any missing or unverified evidence blocks promotion.
     """
     reasons = []
     missing_evidence = []
@@ -454,28 +468,334 @@ def evaluate_promotion(run_id, *, output_root=None):
             missing_evidence.append("minimum_f1_benchmark")
             reasons.append(f"f1 score ({f1}) does not meet benchmark threshold")
 
-    # Gate 5: Model manifest and SPDX licensing
+    # Gate 4b: Task-mode benchmark contract (stricter than the global floor)
+    if eval_metrics and eval_metrics.get("mode") == "task_predictor_pair":
+        task_block = eval_metrics.get("task", {})
+        baseline_f1 = (task_block.get("baseline") or {}).get("macro_f1")
+        model_f1 = (task_block.get("model_metrics") or {}).get("macro_f1")
+        spec_min = (task_block.get("thresholds") or {}).get("macro_f1_min", 0.8)
+        evidence_summary["task_baseline_macro_f1"] = baseline_f1
+        evidence_summary["task_model_macro_f1"] = model_f1
+        if baseline_f1 is None or model_f1 is None:
+            missing_evidence.append("task_benchmark_metrics")
+            reasons.append("task run lacks baseline or model macro_f1 metrics")
+        else:
+            if model_f1 < spec_min:
+                missing_evidence.append("task_macro_f1_threshold")
+                reasons.append(f"model macro_f1 ({model_f1}) below spec threshold ({spec_min})")
+            if task_block.get("baseline_must_improve", True) and model_f1 <= baseline_f1:
+                missing_evidence.append("baseline_improvement")
+                reasons.append(f"model macro_f1 ({model_f1}) does not beat baseline ({baseline_f1})")
+
+    # Gate 5: Model manifest and SPDX licensing (run record or ledger attachment)
     model_manifest = inspection.get("model_manifest")
+    license_source = "run_record" if model_manifest is not None else None
+    ledger_path = inspection.get("provenance", {}).get("evidence_ledger_path")
+    if model_manifest is None and ledger_path:
+        attached = _find_ledger_entry(ledger_path, run_id, "model_licensing_manifest")
+        if attached:
+            record = attached.get("record", {})
+            stored = record.get("manifest")
+            if isinstance(stored, dict) and record.get("manifest_sha256") == digest(stored):
+                model_manifest = stored
+                license_source = "evidence_ledger"
+            else:
+                missing_evidence.append("model_licensing_manifest")
+                reasons.append("ledger license attachment failed self-verification")
     if model_manifest is None:
-        missing_evidence.append("model_licensing_manifest")
-        reasons.append("no model licensing manifest provided for promotion")
+        if "model_licensing_manifest" not in missing_evidence:
+            missing_evidence.append("model_licensing_manifest")
+            reasons.append("no model licensing manifest provided for promotion")
     else:
         lic_result = evaluate_license(model_manifest)
         evidence_summary["licensing_decision"] = lic_result["decision"]
+        evidence_summary["licensing_source"] = license_source
         if lic_result["decision"] != "ALLOWED":
             missing_evidence.append("approved_spdx_license")
             reasons.append(f"model licensing check failed: {'; '.join(lic_result['reasons'])}")
 
-    # Gate 6: Cryptographic signed promotion authority
-    # As mandated by Foundry architecture: promotion always fails closed until signed promotion exists.
-    missing_evidence.append("cryptographic_promotion_signature")
-    reasons.append("Signed provenance, license, security and benchmark gates are not implemented.")
+    # Gate 6: Cryptographic signed promotion authority (Ed25519 bound to ledger head)
+    signature_entries = _iter_ledger_entries(ledger_path, run_id, "promotion_signature") if ledger_path else []
+    if not signature_entries:
+        missing_evidence.append("cryptographic_promotion_signature")
+        reasons.append("no promotion signature entry bound to this run in the verified ledger")
+    elif not signing.backend_available():
+        missing_evidence.append("signing_backend")
+        reasons.append("signing backend unavailable: install hardonian-foundry[signing]")
+    elif keyring is None:
+        missing_evidence.append("trusted_promotion_keyring")
+        reasons.append("promotion requires a trusted keyring to validate signatures")
+    else:
+        try:
+            trusted = signing.normalize_trusted_keys(keyring)
+        except ValueError as exc:
+            trusted = []
+            missing_evidence.append("trusted_promotion_keyring")
+            reasons.append(f"invalid trusted keyring: {exc}")
+        verified_entry = None
+        for entry in signature_entries:
+            record = entry.get("record", {})
+            signed_head = record.get("signed_head")
+            message = canonical({
+                "run_id": run_id,
+                "signed_head": signed_head,
+                "created_at": record.get("created_at"),
+            }).encode("utf-8")
+            pub = record.get("public_key_hex")
+            if entry.get("prev_hash") != signed_head:
+                reasons.append("signature does not bind the ledger head at its signing position")
+                continue
+            if not isinstance(pub, str) or pub not in trusted:
+                reasons.append("signature key is not in the trusted keyring")
+                continue
+            if signing.verify(message, record.get("signature_hex"), [pub]):
+                verified_entry = entry
+                break
+        if verified_entry:
+            vrec = verified_entry["record"]
+            evidence_summary["promotion_signature"] = {
+                "entry_hash": verified_entry["entry_hash"],
+                "signed_head": vrec["signed_head"],
+                "public_key_hex": vrec["public_key_hex"],
+            }
+        else:
+            missing_evidence.append("verified_promotion_signature")
+            reasons.append("no promotion signature verified against the trusted keyring")
 
+    promoted = not missing_evidence
     return {
-        "promoted": False,
-        "status": "BLOCKED",
+        "promoted": promoted,
+        "status": "ALLOWED_REVIEW_REQUIRED" if promoted else "BLOCKED",
         "run_id": run_id,
-        "reasons": sorted(reasons),
+        "reasons": sorted(set(reasons)) if not promoted else [],
         "missing_evidence": sorted(missing_evidence),
         "evidence_summary": evidence_summary,
+        "review_required": True,
+        "note": (
+            "All evidence gates verified against the tamper-evident ledger at the signed head. "
+            "Promotion attests evidence completeness only: deployment remains an explicit human decision."
+            if promoted else
+            "Promotion is fail-closed: any missing or unverified evidence blocks promotion with exit code 2."
+        ),
     }
+
+
+def _iter_ledger_entries(path, run_id, entry_type):
+    """Collect ledger entries of a given type bound to run_id. Chain must be verified elsewhere."""
+    out = []
+    if not path or not os.path.isfile(path):
+        return out
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                record = entry.get("record", {})
+                if record.get("type") == entry_type and record.get("run_id") == run_id:
+                    out.append(entry)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return out
+
+
+def _find_ledger_entry(path, run_id, entry_type):
+    entries = _iter_ledger_entries(path, run_id, entry_type)
+    return entries[-1] if entries else None
+
+
+def attach_license(run_id, *, manifest, output_root=None):
+    """Bind a licensing decision (from the SPDX allowlist validator) into the evidence ledger."""
+    root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
+    run_file = root_dir / run_id / "run.json"
+    if not run_file.is_file():
+        raise FileNotFoundError(f"run not found: {run_id}")
+    with open(run_file, "r", encoding="utf-8") as handle:
+        run_record = json.load(handle)
+    ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
+    if not ledger_path or not os.path.isfile(ledger_path):
+        raise ValueError("evidence ledger not found for run")
+    if _find_ledger_entry(ledger_path, run_id, "model_licensing_manifest"):
+        raise ValueError(f"license manifest already attached for {run_id}")
+    lic_result = evaluate_license(manifest)
+    entry = evidence_append(
+        ledger_path,
+        {
+            "data_origin": "synthetic",
+            "type": "model_licensing_manifest",
+            "run_id": run_id,
+            "manifest_sha256": digest(manifest),
+            "decision": lic_result["decision"],
+            "reasons": lic_result["reasons"],
+            "manifest": manifest,
+        },
+        key=f"{run_id}#license",
+    )
+    return {
+        "run_id": run_id,
+        "decision": lic_result["decision"],
+        "reasons": lic_result["reasons"],
+        "manifest_sha256": entry["record"]["manifest_sha256"],
+        "entry_hash": entry["entry_hash"],
+        "entry_seq": entry["seq"],
+    }
+
+
+def sign_run(run_id, *, private_key_path, output_root=None):
+    """Sign the current ledger head, binding an Ed25519 promotion attestation to the run."""
+    root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
+    run_file = root_dir / run_id / "run.json"
+    if not run_file.is_file():
+        raise FileNotFoundError(f"run not found: {run_id}")
+    with open(run_file, "r", encoding="utf-8") as handle:
+        run_record = json.load(handle)
+    ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
+    if not ledger_path or not os.path.isfile(ledger_path):
+        raise ValueError("evidence ledger not found for run")
+    report = evidence_verify(ledger_path)
+    if report["status"] != "OK":
+        raise ValueError(f"refusing to sign a ledger that does not verify: {report['status']}")
+    if _find_ledger_entry(ledger_path, run_id, "promotion_signature"):
+        raise ValueError(f"run already signed: {run_id}")
+    signed_head = report["head"]
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    message = canonical({"run_id": run_id, "signed_head": signed_head, "created_at": timestamp}).encode("utf-8")
+    public_hex = signing.public_key_hex(private_key_path)
+    signature_hex = signing.sign(message, private_key_path)
+    entry = evidence_append(
+        ledger_path,
+        {
+            "data_origin": "synthetic",
+            "type": "promotion_signature",
+            "run_id": run_id,
+            "signed_head": signed_head,
+            "public_key_hex": public_hex,
+            "signature_hex": signature_hex,
+            "created_at": timestamp,
+            "signing_backend": signing.SIGNING_BACKEND,
+        },
+        key=f"{run_id}#sig",
+    )
+    return {
+        "run_id": run_id,
+        "signed_head": signed_head,
+        "public_key_hex": public_hex,
+        "entry_hash": entry["entry_hash"],
+        "entry_seq": entry["seq"],
+    }
+
+
+def load_keyring(path):
+    """Load a trusted keyring JSON file: {\"trusted_keys\": [{\"public_key_hex\": ...}]}."""
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict) or not isinstance(data.get("trusted_keys"), list):
+        raise TypeError("keyring must be an object with a trusted_keys list")
+    return signing.normalize_trusted_keys(data["trusted_keys"])
+
+
+def create_task_run(*, task_spec, dataset_records, baseline_predictions, model_predictions,
+                    output_root=None, model_manifest=None):
+    """Execute the task-mode vertical: spec-validated dataset, frozen family-disjoint test
+    split, dual-predictor scoring, and tamper-evident run tracking. Predictions come from
+    external harnesses; Foundry only validates, scores, and binds evidence."""
+    spec_errors = validate_spec(task_spec)
+    if spec_errors:
+        raise ValueError(f"invalid task spec: {'; '.join(spec_errors)}")
+
+    root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
+    root_dir.mkdir(parents=True, exist_ok=True)
+
+    val_result = validate_task_dataset(dataset_records, task_spec)
+    if val_result["status"] != "VALID":
+        raise ValueError(f"invalid task dataset: {'; '.join(val_result['errors'])}")
+
+    preflight = run_preflight(dataset=dataset_records, output_root=str(root_dir),
+                              model_manifest=model_manifest, task_spec=task_spec)
+    if preflight["status"] != "PASSED":
+        raise ValueError(f"refinery run aborted: preflight failed ({'; '.join(preflight['errors'])})")
+
+    seed = task_spec.get("split_seed", 42)
+    splits = split_task_dataset(dataset_records, task_spec)
+    test_rows = splits["test"]
+    baseline_metrics = score_predictions(test_rows, baseline_predictions, task_spec)
+    model_metrics = score_predictions(test_rows, model_predictions, task_spec)
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_hash = hashlib.sha256(
+        f"{timestamp}:{digest(test_rows)}:{model_metrics['predictions_sha256']}:{time.monotonic()}".encode()
+    ).hexdigest()[:8]
+    run_id = f"run-{timestamp}-{run_hash}"
+    run_dir = root_dir / run_id
+    run_dir.mkdir(mode=0o700, exist_ok=False)
+
+    dataset_sha256 = digest(dataset_records)
+    test_sha256 = digest(test_rows)
+    ledger_path = str(root_dir / "evidence.jsonl")
+    evidence_payload = {
+        "data_origin": "synthetic",
+        "run_id": run_id,
+        "task_id": task_spec["task_id"],
+        "dataset_sha256": dataset_sha256,
+        "test_sha256": test_sha256,
+        "f1": model_metrics["macro_f1"],
+        "critical_false_negative_rate": model_metrics["critical_false_negative_rate"],
+        "preflight_status": preflight["status"],
+        "created_at": timestamp,
+    }
+    evidence_entry = evidence_append(ledger_path, evidence_payload, key=run_id)
+
+    evaluation = {
+        "data_origin": "synthetic",
+        "mode": "task_predictor_pair",
+        "task_id": task_spec["task_id"],
+        "test_count": len(test_rows),
+        "dataset_sha256": dataset_sha256,
+        "split_seed": seed,
+        "test_sha256": test_sha256,
+        "f1": model_metrics["macro_f1"],
+        "critical_false_negative_rate": model_metrics["critical_false_negative_rate"],
+        "coverage_automatic_decision": 0.0,
+        "review_rate": 1.0,
+        "cost_per_case_usd": None,
+        "latency_p95_ms": None,
+        "task": {
+            "labels": task_spec["labels"],
+            "thresholds": task_spec["thresholds"],
+            "baseline_must_improve": task_spec.get("baseline_must_improve", True),
+            "family_disjoint": val_result["family_disjoint"],
+            "family_count": val_result["family_count"],
+            "split_counts": {k: len(v) for k, v in splits.items()},
+            "model_identity": task_spec["model"],
+            "baseline": baseline_metrics,
+            "model_metrics": model_metrics,
+            "baseline_predictions_sha256": baseline_metrics["predictions_sha256"],
+            "model_predictions_sha256": model_metrics["predictions_sha256"],
+        },
+        "note": ("External predictions scored against a frozen synthetic split. "
+                 "Synthetic self-consistency is not pilot accuracy; outcomes require human review."),
+    }
+
+    run_record = {
+        "schema_version": "1.1",
+        "run_id": run_id,
+        "created_at": timestamp,
+        "status": "COMPLETED",
+        "dataset_sha256": dataset_sha256,
+        "test_sha256": test_sha256,
+        "split_seed": seed,
+        "preflight": preflight,
+        "evaluation": evaluation,
+        "model_manifest": model_manifest,
+        "provenance": {
+            "code_digest": _code_digest(),
+            "runtime": "offline_cpu",
+            "evidence_ledger_path": ledger_path,
+            "evidence_entry_hash": evidence_entry["entry_hash"],
+            "evidence_seq": evidence_entry["seq"],
+            "evidence_key": run_id,
+        },
+    }
+    with open(run_dir / "run.json", "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(run_record, indent=2, sort_keys=True) + "\n")
+    return run_record
