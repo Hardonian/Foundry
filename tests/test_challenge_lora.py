@@ -4,7 +4,9 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location("challenge_lora", SCRIPTS / "challenge_lora.py")
 challenge = importlib.util.module_from_spec(spec)
