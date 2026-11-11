@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from hardonian_foundry import signing
 from hardonian_foundry.baseline import canonical, digest
-from hardonian_foundry.evidence import append as append_evidence, verify as verify_evidence
+from hardonian_foundry.evidence import append as append_evidence
+from hardonian_foundry.evidence import verify as verify_evidence
 from hardonian_foundry.refinery import (
     attach_license,
     create_task_run,
