@@ -237,6 +237,70 @@ class TaskPromotionTests(unittest.TestCase):
         sign_run(run_id, private_key_path=key_path, output_root=self.runs)
         return [public]
 
+    def _premature_signature(self, rid):
+        key_path = str(self.root / "premature.pem")
+        public = signing.generate_keypair(key_path)["public_key_hex"]
+        ledger = str(Path(self.runs) / "evidence.jsonl")
+        run = json.loads((Path(self.runs) / rid / "run.json").read_text())
+        head = verify_evidence(ledger)["head"]
+        timestamp = "20260101T000000Z"
+        from hardonian_foundry.baseline import digest
+        payload = {"version": "2", "run_id": rid, "signed_head": head,
+                   "created_at": timestamp, "run_sha256": digest(run)}
+        append_evidence(ledger, {"data_origin": "synthetic", "type": "promotion_signature",
+                                 **payload, "public_key_hex": public,
+                                 "signature_hex": signing.sign(canonical(payload).encode(), key_path)},
+                        key=f"{rid}#sig")
+        return [public]
+
+    def test_signing_requires_allowed_license(self):
+        rid = self._create_run()["run_id"]
+        key = str(self.root / "no-license.pem")
+        signing.generate_keypair(key)
+        ledger = Path(self.runs) / "evidence.jsonl"
+        before = ledger.read_text()
+        with self.assertRaisesRegex(ValueError, "allowed license first"):
+            sign_run(rid, private_key_path=key, output_root=self.runs)
+        self.assertEqual(before, ledger.read_text())
+        denied = dict(ALLOWED_MANIFEST, license_id="GPL-3.0")
+        attach_license(rid, manifest=denied, output_root=self.runs)
+        with self.assertRaisesRegex(ValueError, "allowed license first"):
+            sign_run(rid, private_key_path=key, output_root=self.runs)
+
+    def test_malformed_nested_metrics_fail_closed(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        path = Path(self.runs) / rid / "run.json"
+        original = json.loads(path.read_text())
+        cases = [("task", [1]), ("baseline", [1]), ("model_metrics", [1]),
+                 ("thresholds", [1]), ("macro_f1", "bad"), ("macro_f1", float("nan")),
+                 ("baseline_must_improve", "false"), ("f1", "bad"),
+                 ("evaluation", [1])]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                changed = json.loads(json.dumps(original))
+                if field == "evaluation":
+                    changed["evaluation"] = value
+                elif field == "f1":
+                    changed["evaluation"][field] = value
+                elif field == "task":
+                    changed["evaluation"][field] = value
+                elif field == "macro_f1":
+                    changed["evaluation"]["task"]["baseline"][field] = value
+                else:
+                    changed["evaluation"]["task"][field] = value
+                path.write_text(json.dumps(changed))
+                result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+                self.assertFalse(result["promoted"])
+                self.assertEqual(result["status"], "BLOCKED")
+                expected = ("run_inspection_failed" if field == "evaluation" or
+                            (field == "macro_f1" and isinstance(value, float)) else
+                            "positive_case_coverage" if field == "f1" else
+                            "task_label_coverage" if field in ("task", "baseline", "model_metrics") else
+                            "task_benchmark_metrics")
+                self.assertIn(expected, result["missing_evidence"])
+
     def test_signed_run_metadata_cannot_be_changed(self):
         splits = split_task_dataset(self.records, self.spec)
         self._write(self.baseline, predictions_for(splits["test"], "gold"))
@@ -268,8 +332,10 @@ class TaskPromotionTests(unittest.TestCase):
 
     def test_license_appended_after_signature_does_not_authorize(self):
         rid = self._create_run()["run_id"]
-        keys = self._sign(rid)
+        keys = self._premature_signature(rid)
         attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        with self.assertRaisesRegex(ValueError, "recreate the run"):
+            sign_run(rid, private_key_path=str(self.root / "premature.pem"), output_root=self.runs)
         result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
         self.assertFalse(result["promoted"])
         self.assertIn("verified_promotion_signature", result["missing_evidence"])
@@ -278,7 +344,7 @@ class TaskPromotionTests(unittest.TestCase):
         from hardonian_foundry.evidence import verify_entries
 
         rid = self._create_run()["run_id"]
-        keys = self._sign(rid)
+        keys = self._premature_signature(rid)
 
         def append_during_verification(entries):
             report = verify_entries(entries)
@@ -322,6 +388,24 @@ class TaskPromotionTests(unittest.TestCase):
                 result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
                 self.assertEqual(result["status"], "BLOCKED")
                 self.assertIn("task_label_coverage", result["missing_evidence"])
+
+    def test_concurrent_signers_only_one_attestation(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key = str(self.root / "race.pem")
+        public = signing.generate_keypair(key)["public_key_hex"]
+        barrier = threading.Barrier(2)
+        def attempt():
+            barrier.wait(timeout=5)
+            try:
+                return sign_run(rid, private_key_path=key, output_root=self.runs)
+            except ValueError as exc:
+                return str(exc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: attempt(), range(2)))
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertTrue(any(isinstance(result, str) and "recreate the run" in result for result in results))
+        self.assertTrue(evaluate_promotion(rid, output_root=self.runs, keyring=[public])["promoted"])
 
     def test_signing_serializes_unrelated_append(self):
         rid = self._create_run()["run_id"]
@@ -411,6 +495,8 @@ class TaskPromotionTests(unittest.TestCase):
         result = evaluate_promotion(rid, output_root=self.runs, keyring=[public])
         self.assertFalse(result["promoted"])
         self.assertIn("verified_promotion_signature", result["missing_evidence"])
+        with self.assertRaisesRegex(ValueError, "recreate the run"):
+            sign_run(rid, private_key_path=key_path, output_root=self.runs)
 
     def test_signed_run_manifest_and_later_unrelated_ledger_entry(self):
         test_rows = split_task_dataset(self.records, self.spec)["test"]

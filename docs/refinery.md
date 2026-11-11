@@ -128,6 +128,7 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli refinery run --task-spec spec.js
 Promotion attestations are Ed25519 signatures over the run digest and ledger head (`signing.py`):
 - `keygen` creates a new private key file (refuses to overwrite; file mode forced to 0600).
 - `attach-license <run_id> --manifest m.json` binds the SPDX allowlist decision into the ledger (once per run).
+- Sign only after an allowed license is present in the run record or attached to its ledger. A prior legacy or premature signature cannot be upgraded or reused, and attaching a license after signing does not authorize promotion. Recovery: recreate a new run from the original inputs, supply or attach an allowed license, then sign the new run and promote with a trusted keyring. Existing runs and signatures remain unchanged for audit.
 - `sign <run_id> --key-file k.pem` appends a `promotion_signature` entry covering every ledger entry up to that head (once per run).
 - `promote --keyring keyring.json` verifies the signature against trusted public keys (64-char lowercase hex). Later unrelated ledger appends are permitted; license evidence used for promotion must precede the signature.
 

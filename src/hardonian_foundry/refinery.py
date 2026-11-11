@@ -5,6 +5,7 @@ Synthetic-only research baseline. Never deploy for real financial data or autono
 """
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -418,7 +419,8 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
 
     try:
         inspection = inspect_run(run_id, output_root=str(root_dir), _include_snapshot=True)
-    except (FileNotFoundError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        digest(inspection["run_record"])  # Reject non-canonical values before evaluating evidence.
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         missing_evidence.append("run_inspection_failed")
         reasons.append(f"failed to inspect run: {exc}")
         return {
@@ -443,6 +445,9 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
         missing_evidence.append("passed_preflight")
         reasons.append("training preflight did not pass")
 
+    def valid_rate(value):
+        return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
+
     # Gate 4: Evaluation benchmarks
     eval_metrics = inspection.get("evaluation")
     if not eval_metrics or not isinstance(eval_metrics, dict):
@@ -454,18 +459,18 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
         evidence_summary["evaluation_f1"] = f1
         evidence_summary["critical_fn_rate"] = cfn_rate
 
-        if cfn_rate is None:
+        if not valid_rate(cfn_rate):
             missing_evidence.append("critical_case_coverage")
             reasons.append("evaluation lacks critical test cases (critical false negative rate is undefined)")
         elif cfn_rate != 0.0:
             missing_evidence.append("zero_critical_false_negatives")
             reasons.append(f"critical false negative rate ({cfn_rate}) exceeds zero tolerance")
 
-        if eval_metrics.get("review_rate") != 1.0:
+        if not valid_rate(eval_metrics.get("review_rate")) or eval_metrics.get("review_rate") != 1.0:
             missing_evidence.append("mandatory_human_review_policy")
             reasons.append("evaluation does not enforce 100% human review policy")
 
-        if f1 is None:
+        if not valid_rate(f1):
             missing_evidence.append("positive_case_coverage")
             reasons.append("evaluation lacks positive/mismatch cases (f1 score is undefined)")
         elif f1 < 0.8:
@@ -473,8 +478,10 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             reasons.append(f"f1 score ({f1}) does not meet benchmark threshold")
 
     # Gate 4b: Task-mode benchmark contract (stricter than the global floor)
-    if eval_metrics and eval_metrics.get("mode") == "task_predictor_pair":
-        task_block = eval_metrics.get("task", {})
+    if isinstance(eval_metrics, dict) and eval_metrics.get("mode") == "task_predictor_pair":
+        task_block = eval_metrics.get("task")
+        if not isinstance(task_block, dict):
+            task_block = {}
         labels = task_block.get("labels")
         for metrics in (task_block.get("baseline"), task_block.get("model_metrics")):
             if (not isinstance(labels, list) or not labels
@@ -489,12 +496,17 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
                 missing_evidence.append("task_label_coverage")
                 reasons.append("task test split lacks positive support for every contract label")
                 break
-        baseline_f1 = (task_block.get("baseline") or {}).get("macro_f1")
-        model_f1 = (task_block.get("model_metrics") or {}).get("macro_f1")
-        spec_min = (task_block.get("thresholds") or {}).get("macro_f1_min", 0.8)
+        baseline = task_block.get("baseline")
+        model = task_block.get("model_metrics")
+        thresholds = task_block.get("thresholds")
+        baseline_f1 = baseline.get("macro_f1") if isinstance(baseline, dict) else None
+        model_f1 = model.get("macro_f1") if isinstance(model, dict) else None
+        spec_min = thresholds.get("macro_f1_min", 0.8) if isinstance(thresholds, dict) else None
         evidence_summary["task_baseline_macro_f1"] = baseline_f1
         evidence_summary["task_model_macro_f1"] = model_f1
-        if baseline_f1 is None or model_f1 is None:
+        if (not valid_rate(baseline_f1) or not valid_rate(model_f1)
+                or not valid_rate(spec_min)
+                or not isinstance(task_block.get("baseline_must_improve", True), bool)):
             missing_evidence.append("task_benchmark_metrics")
             reasons.append("task run lacks baseline or model macro_f1 metrics")
         else:
@@ -596,7 +608,7 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
             }
         else:
             missing_evidence.append("verified_promotion_signature")
-            reasons.append("no promotion signature verified against the trusted keyring")
+            reasons.append("no promotion signature verified against the trusted keyring; if the signature is legacy or predates license evidence, recreate the run, attach an allowed license, and sign the new run")
 
     promoted = not missing_evidence
     return {
@@ -693,7 +705,20 @@ def sign_run(run_id, *, private_key_path, output_root=None):
         if any(isinstance(entry.get("record"), dict)
                and entry["record"].get("type") == "promotion_signature"
                and entry["record"].get("run_id") == run_id for entry in entries):
-            raise ValueError(f"run already signed: {run_id}")
+            raise ValueError(f"run already signed: {run_id}; recreate the run, attach an allowed license, and sign the new run")
+        manifest = run_record.get("model_manifest")
+        if manifest is None:
+            attachments = [entry["record"] for entry in entries
+                           if isinstance(entry.get("record"), dict)
+                           and entry["record"].get("type") == "model_licensing_manifest"
+                           and entry["record"].get("run_id") == run_id]
+            if attachments:
+                attachment = attachments[-1]
+                manifest = attachment.get("manifest")
+                if not isinstance(manifest, dict) or attachment.get("manifest_sha256") != digest(manifest):
+                    manifest = None
+        if evaluate_license(manifest)["decision"] != "ALLOWED":
+            raise ValueError("signing requires an allowed license first; attach an allowed license or recreate the run")
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         run_sha256 = digest(run_record)
         message = canonical({"version": "2", "run_id": run_id, "signed_head": signed_head,
@@ -713,7 +738,12 @@ def sign_run(run_id, *, private_key_path, output_root=None):
             "signing_backend": signing.SIGNING_BACKEND,
         }
 
-    entry = evidence_append_with_builder(ledger_path, build_signature, key=f"{run_id}#sig")
+    try:
+        entry = evidence_append_with_builder(ledger_path, build_signature, key=f"{run_id}#sig")
+    except ValueError as exc:
+        if str(exc) == "duplicate idempotency key":
+            raise ValueError("run already signed or signature key occupied; recreate the run, attach an allowed license, and sign the new run") from exc
+        raise
     return {
         "run_id": run_id,
         "signed_head": entry["record"]["signed_head"],
