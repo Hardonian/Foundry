@@ -3,11 +3,13 @@ license attachment, Ed25519 signing, and the promotion gate end-to-end."""
 import json
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from hardonian_foundry import signing
+from hardonian_foundry import evidence, signing
 from hardonian_foundry.baseline import canonical, digest
 from hardonian_foundry.evidence import append as append_evidence
 from hardonian_foundry.evidence import verify as verify_evidence
@@ -305,6 +307,93 @@ class TaskPromotionTests(unittest.TestCase):
         result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
         self.assertFalse(result["promoted"])
         self.assertIn("task_label_coverage", result["missing_evidence"])
+
+    def test_malformed_contract_labels_block_promotion(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        keys = self._sign(rid)
+        path = Path(self.runs) / rid / "run.json"
+        original = json.loads(path.read_text())
+        for labels in ([[]], [{}], [None], [1], [""], ["ALPHA", "ALPHA"]):
+            with self.subTest(labels=labels):
+                changed = json.loads(json.dumps(original))
+                changed["evaluation"]["task"]["labels"] = labels
+                path.write_text(json.dumps(changed))
+                result = evaluate_promotion(rid, output_root=self.runs, keyring=keys)
+                self.assertEqual(result["status"], "BLOCKED")
+                self.assertIn("task_label_coverage", result["missing_evidence"])
+
+    def test_signing_serializes_unrelated_append(self):
+        rid = self._create_run()["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "concurrent.pem")
+        public = signing.generate_keypair(key_path)["public_key_hex"]
+        ledger = str(Path(self.runs) / "evidence.jsonl")
+        signing_started = threading.Event()
+        release_signing = threading.Event()
+        lock_attempted = threading.Event()
+        real_sign = signing.sign
+        real_lock = evidence._lock
+
+        def paused_sign(message, key):
+            signing_started.set()
+            if not release_signing.wait(5):
+                raise TimeoutError("signing was not released")
+            return real_sign(message, key)
+
+        def competing_append():
+            return append_evidence(ledger, {"data_origin": "synthetic", "type": "unrelated"})
+
+        def observed_lock(handle):
+            if signing_started.is_set():
+                lock_attempted.set()
+            return real_lock(handle)
+
+        with (ThreadPoolExecutor(max_workers=2) as pool,
+              patch("hardonian_foundry.refinery.signing.sign", side_effect=paused_sign),
+              patch("hardonian_foundry.evidence._lock", side_effect=observed_lock)):
+            signer = pool.submit(sign_run, rid, private_key_path=key_path, output_root=self.runs)
+            try:
+                self.assertTrue(signing_started.wait(5))
+                writer = pool.submit(competing_append)
+                self.assertTrue(lock_attempted.wait(5))
+                with self.assertRaises(TimeoutError):
+                    writer.result(timeout=0.1)
+            finally:
+                release_signing.set()
+            signed = signer.result(timeout=5)
+            other = writer.result(timeout=5)
+        entries = [json.loads(line) for line in Path(ledger).read_text().splitlines()]
+        signature = next(e for e in entries if e["entry_hash"] == signed["entry_hash"])
+        self.assertEqual(signature["prev_hash"], signature["record"]["signed_head"])
+        self.assertGreater(other["seq"], signature["seq"])
+        self.assertEqual(verify_evidence(ledger)["status"], "OK")
+        self.assertTrue(evaluate_promotion(rid, output_root=self.runs, keyring=[public])["promoted"])
+
+    def test_signing_rejects_corrupt_chain_without_appending(self):
+        rid = self._create_run()["run_id"]
+        key_path = str(self.root / "corrupt.pem")
+        signing.generate_keypair(key_path)
+        ledger = Path(self.runs) / "evidence.jsonl"
+        entry = json.loads(ledger.read_text())
+        entry["record"]["run_id"] = "modified"
+        broken = json.dumps(entry) + "\n"
+        ledger.write_text(broken)
+        with self.assertRaises(ValueError):
+            sign_run(rid, private_key_path=key_path, output_root=self.runs)
+        self.assertEqual(ledger.read_text(), broken)
+
+    def test_signing_rejects_existing_signature_with_other_key(self):
+        rid = self._create_run()["run_id"]
+        ledger = str(Path(self.runs) / "evidence.jsonl")
+        append_evidence(ledger, {"data_origin": "synthetic", "type": "promotion_signature",
+                                 "run_id": rid}, key="nonstandard-key")
+        key_path = str(self.root / "duplicate.pem")
+        signing.generate_keypair(key_path)
+        before = Path(ledger).read_text()
+        with self.assertRaisesRegex(ValueError, "already signed"):
+            sign_run(rid, private_key_path=key_path, output_root=self.runs)
+        self.assertEqual(Path(ledger).read_text(), before)
 
     def test_legacy_signature_is_blocked(self):
         rid = self._create_run()["run_id"]

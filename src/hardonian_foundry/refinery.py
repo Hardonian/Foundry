@@ -23,8 +23,8 @@ from .baseline import (
 from .baseline import (
     dataset as default_dataset,
 )
+from .evidence import _append_with_builder as evidence_append_with_builder
 from .evidence import append as evidence_append
-from .evidence import verify as evidence_verify
 from .evidence import verify_entries as evidence_verify_entries
 from .licensing import evaluate as evaluate_license
 from .task_eval import (
@@ -477,7 +477,9 @@ def evaluate_promotion(run_id, *, output_root=None, keyring=None):
         task_block = eval_metrics.get("task", {})
         labels = task_block.get("labels")
         for metrics in (task_block.get("baseline"), task_block.get("model_metrics")):
-            if (not isinstance(labels, list) or not labels or not isinstance(metrics, dict)
+            if (not isinstance(labels, list) or not labels
+                    or any(not isinstance(label, str) or not label.strip() for label in labels)
+                    or len(set(labels)) != len(labels) or not isinstance(metrics, dict)
                     or not isinstance(metrics.get("per_class"), dict)
                     or set(metrics["per_class"]) != set(labels)
                     or any(not isinstance(metrics["per_class"].get(label), dict)
@@ -686,21 +688,19 @@ def sign_run(run_id, *, private_key_path, output_root=None):
     ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
     if not ledger_path or not os.path.isfile(ledger_path):
         raise ValueError("evidence ledger not found for run")
-    report = evidence_verify(ledger_path)
-    if report["status"] != "OK":
-        raise ValueError(f"refusing to sign a ledger that does not verify: {report['status']}")
-    if _find_ledger_entry(ledger_path, run_id, "promotion_signature"):
-        raise ValueError(f"run already signed: {run_id}")
-    signed_head = report["head"]
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_sha256 = digest(run_record)
-    message = canonical({"version": "2", "run_id": run_id, "signed_head": signed_head,
-                         "created_at": timestamp, "run_sha256": run_sha256}).encode("utf-8")
-    public_hex = signing.public_key_hex(private_key_path)
-    signature_hex = signing.sign(message, private_key_path)
-    entry = evidence_append(
-        ledger_path,
-        {
+
+    def build_signature(entries, signed_head):
+        if any(isinstance(entry.get("record"), dict)
+               and entry["record"].get("type") == "promotion_signature"
+               and entry["record"].get("run_id") == run_id for entry in entries):
+            raise ValueError(f"run already signed: {run_id}")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        run_sha256 = digest(run_record)
+        message = canonical({"version": "2", "run_id": run_id, "signed_head": signed_head,
+                             "created_at": timestamp, "run_sha256": run_sha256}).encode("utf-8")
+        public_hex = signing.public_key_hex(private_key_path)
+        signature_hex = signing.sign(message, private_key_path)
+        return {
             "data_origin": "synthetic",
             "type": "promotion_signature",
             "version": "2",
@@ -711,13 +711,13 @@ def sign_run(run_id, *, private_key_path, output_root=None):
             "signature_hex": signature_hex,
             "created_at": timestamp,
             "signing_backend": signing.SIGNING_BACKEND,
-        },
-        key=f"{run_id}#sig",
-    )
+        }
+
+    entry = evidence_append_with_builder(ledger_path, build_signature, key=f"{run_id}#sig")
     return {
         "run_id": run_id,
-        "signed_head": signed_head,
-        "public_key_hex": public_hex,
+        "signed_head": entry["record"]["signed_head"],
+        "public_key_hex": entry["record"]["public_key_hex"],
         "entry_hash": entry["entry_hash"],
         "entry_seq": entry["seq"],
     }
