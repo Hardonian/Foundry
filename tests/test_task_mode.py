@@ -267,6 +267,19 @@ class TaskPromotionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "allowed license first"):
             sign_run(rid, private_key_path=key, output_root=self.runs)
 
+    def test_malformed_top_level_metadata_fails_closed(self):
+        rid = self._create_run()["run_id"]
+        path = Path(self.runs) / rid / "run.json"
+        original = json.loads(path.read_text())
+        for changed in ({}, [], None, {**original, "provenance": None},
+                        {**original, "preflight": None}):
+            with self.subTest(metadata=changed):
+                path.write_text(json.dumps(changed))
+                result = evaluate_promotion(rid, output_root=self.runs)
+                self.assertFalse(result["promoted"])
+                self.assertEqual(result["status"], "BLOCKED")
+                self.assertIn("run_inspection_failed", result["missing_evidence"])
+
     def test_malformed_nested_metrics_fail_closed(self):
         rid = self._create_run()["run_id"]
         attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)

@@ -330,6 +330,10 @@ def inspect_run(run_id, *, output_root=None, _include_snapshot=False):
 
     with open(run_file, "r", encoding="utf-8") as handle:
         run_record = json.load(handle)
+    if (not isinstance(run_record, dict)
+            or not isinstance(run_record.get("provenance"), dict)
+            or not isinstance(run_record.get("preflight"), dict)):
+        raise TypeError("run metadata requires provenance and preflight objects")
 
     ledger_path = run_record.get("provenance", {}).get("evidence_ledger_path")
     expected_entry_hash = run_record.get("provenance", {}).get("evidence_entry_hash")
