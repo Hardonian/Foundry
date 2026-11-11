@@ -53,7 +53,7 @@ def main():
         raise SystemExit(f"pinned snapshot missing: {snap}")
 
     os.environ.update(CUDA_VISIBLE_DEVICES="", HF_HOME=str(hf_home), HF_HUB_OFFLINE="1",
-                      TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_IMPLICIT_TOKEN="1")
+                      TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_IMPLICIT_TOKEN="1")  # nosec B106 - env opt-out flags, not credentials
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -70,8 +70,8 @@ def main():
     labels = list(spec["labels"])  # UNDETERMINED is a legitimate gold/pred class
     label_menu = ", ".join(labels)
 
-    tokenizer = AutoTokenizer.from_pretrained(str(snap), local_files_only=True)
-    model = AutoModelForCausalLM.from_pretrained(str(snap), local_files_only=True,
+    tokenizer = AutoTokenizer.from_pretrained(str(snap), local_files_only=True)  # nosec B615 - local pinned snapshot dir, no hub download
+    model = AutoModelForCausalLM.from_pretrained(str(snap), local_files_only=True,  # nosec B615 - local pinned snapshot dir, no hub download
                                                  torch_dtype=torch.float32)
     peft_config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.0, bias="none",
                              task_type="CAUSAL_LM",

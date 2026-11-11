@@ -76,7 +76,7 @@ SUFFIXES = [["", "", ""],
 
 
 def compose(family, archetype, variant_seed):
-    rng = random.Random(variant_seed)
+    rng = random.Random(variant_seed)  # nosec B311 - deterministic synthetic-data styling, not security randomness
     opener = OPENERS[family]
     preamble = rng.choice(PREAMBLES[family % len(PREAMBLES)])
     suffix = rng.choice(SUFFIXES[family % len(SUFFIXES)])

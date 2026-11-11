@@ -48,7 +48,7 @@ def main():
         raise SystemExit("adapter weights changed since training; refusing to predict")
 
     os.environ.update(CUDA_VISIBLE_DEVICES="", HF_HOME=str(hf_home), HF_HUB_OFFLINE="1",
-                      TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_IMPLICIT_TOKEN="1")
+                      TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_IMPLICIT_TOKEN="1")  # nosec B106 - env opt-out flags, not credentials
     import torch
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -62,8 +62,8 @@ def main():
     allowlist = list(spec["labels"])  # UNDETERMINED is a legitimate class
     label_menu = ", ".join(allowlist)
 
-    tokenizer = AutoTokenizer.from_pretrained(str(snap), local_files_only=True)
-    base = AutoModelForCausalLM.from_pretrained(str(snap), local_files_only=True,
+    tokenizer = AutoTokenizer.from_pretrained(str(snap), local_files_only=True)  # nosec B615 - local pinned snapshot dir, no hub download
+    base = AutoModelForCausalLM.from_pretrained(str(snap), local_files_only=True,  # nosec B615 - local pinned snapshot dir, no hub download
                                                 torch_dtype=torch.float32)
     model = PeftModel.from_pretrained(base, str(adapter_dir))
     model.eval()

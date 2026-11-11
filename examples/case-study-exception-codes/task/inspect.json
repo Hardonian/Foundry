@@ -1,0 +1,224 @@
+{
+  "created_at": "20261111T031107Z",
+  "dataset_sha256": "fbe0a1b143fa8a9b402df3348cd771bafedca5524f9c8e211f6421f35081799b",
+  "evaluation": {
+    "cost_per_case_usd": null,
+    "coverage_automatic_decision": 0.0,
+    "critical_false_negative_rate": 0.0,
+    "data_origin": "synthetic",
+    "dataset_sha256": "fbe0a1b143fa8a9b402df3348cd771bafedca5524f9c8e211f6421f35081799b",
+    "f1": 1.0,
+    "latency_p95_ms": null,
+    "mode": "task_predictor_pair",
+    "note": "External predictions scored against a frozen synthetic split. Synthetic self-consistency is not pilot accuracy; outcomes require human review.",
+    "review_rate": 1.0,
+    "split_seed": 20261110,
+    "task": {
+      "baseline": {
+        "accuracy": 0.75,
+        "critical_false_negative_rate": 0.6,
+        "critical_misses": 96,
+        "critical_total": 160,
+        "labels_scored": [
+          "AMOUNT_VARIANCE_ACCEPTED",
+          "CURRENCY_VARIANCE_ACCEPTED",
+          "DUPLICATE_RECORD_CONFIRMED",
+          "FALSE_POSITIVE_CONFIRMED",
+          "MISSING_COUNTERPART_CONFIRMED",
+          "REOPENED_FOR_INVESTIGATION",
+          "TIMING_DIFFERENCE_ACCEPTED",
+          "UNDETERMINED"
+        ],
+        "macro_f1": 0.7875,
+        "per_class": {
+          "AMOUNT_VARIANCE_ACCEPTED": {
+            "f1": 0.6666666666666666,
+            "precision": 0.5,
+            "recall": 1.0,
+            "support": 32
+          },
+          "CURRENCY_VARIANCE_ACCEPTED": {
+            "f1": 0.6666666666666666,
+            "precision": 0.5,
+            "recall": 1.0,
+            "support": 32
+          },
+          "DUPLICATE_RECORD_CONFIRMED": {
+            "f1": 0.8,
+            "precision": 0.6666666666666666,
+            "recall": 1.0,
+            "support": 64
+          },
+          "FALSE_POSITIVE_CONFIRMED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "MISSING_COUNTERPART_CONFIRMED": {
+            "f1": 0.6666666666666666,
+            "precision": 1.0,
+            "recall": 0.5,
+            "support": 64
+          },
+          "REOPENED_FOR_INVESTIGATION": {
+            "f1": 0.5,
+            "precision": 1.0,
+            "recall": 0.3333333333333333,
+            "support": 96
+          },
+          "TIMING_DIFFERENCE_ACCEPTED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "UNDETERMINED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          }
+        },
+        "predictions_sha256": "3100a51cf1fb96d1f0be8b4805547e542224357da1c325b213d4b129e07d0442",
+        "test_count": 384
+      },
+      "baseline_must_improve": true,
+      "baseline_predictions_sha256": "3100a51cf1fb96d1f0be8b4805547e542224357da1c325b213d4b129e07d0442",
+      "family_count": 12,
+      "family_disjoint": true,
+      "labels": [
+        "DUPLICATE_RECORD_CONFIRMED",
+        "TIMING_DIFFERENCE_ACCEPTED",
+        "AMOUNT_VARIANCE_ACCEPTED",
+        "CURRENCY_VARIANCE_ACCEPTED",
+        "MISSING_COUNTERPART_CONFIRMED",
+        "FALSE_POSITIVE_CONFIRMED",
+        "REOPENED_FOR_INVESTIGATION",
+        "UNDETERMINED"
+      ],
+      "model_identity": {
+        "adapter_name": "exception-codes-lora",
+        "adapter_sha256": "7a867d837114f6406e1b984c3fe776bfcaf5b5356dd34384e96128e340e53548",
+        "base_model_id": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+        "revision": "ea3f2471cf1b1f0db85067f1ef93848e38e88c25"
+      },
+      "model_metrics": {
+        "accuracy": 1.0,
+        "critical_false_negative_rate": 0.0,
+        "critical_misses": 0,
+        "critical_total": 160,
+        "labels_scored": [
+          "AMOUNT_VARIANCE_ACCEPTED",
+          "CURRENCY_VARIANCE_ACCEPTED",
+          "DUPLICATE_RECORD_CONFIRMED",
+          "FALSE_POSITIVE_CONFIRMED",
+          "MISSING_COUNTERPART_CONFIRMED",
+          "REOPENED_FOR_INVESTIGATION",
+          "TIMING_DIFFERENCE_ACCEPTED",
+          "UNDETERMINED"
+        ],
+        "macro_f1": 1.0,
+        "per_class": {
+          "AMOUNT_VARIANCE_ACCEPTED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "CURRENCY_VARIANCE_ACCEPTED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "DUPLICATE_RECORD_CONFIRMED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 64
+          },
+          "FALSE_POSITIVE_CONFIRMED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "MISSING_COUNTERPART_CONFIRMED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 64
+          },
+          "REOPENED_FOR_INVESTIGATION": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 96
+          },
+          "TIMING_DIFFERENCE_ACCEPTED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          },
+          "UNDETERMINED": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "support": 32
+          }
+        },
+        "predictions_sha256": "dbb764bf34215734292cec20f1fa5853c961e0e379790f5b5b876f9982a9846f",
+        "test_count": 384
+      },
+      "model_predictions_sha256": "dbb764bf34215734292cec20f1fa5853c961e0e379790f5b5b876f9982a9846f",
+      "split_counts": {
+        "test": 384,
+        "train": 672,
+        "validation": 96
+      },
+      "thresholds": {
+        "macro_f1_min": 0.8
+      }
+    },
+    "task_id": "settler-exception-resolution-codes",
+    "test_count": 384,
+    "test_sha256": "f16df531a12bb6e61349e92f62e0e5ca95c81550af0424a692788077b96cdb31"
+  },
+  "ledger_report": {
+    "count": 1,
+    "head": "3f3d071c2d19ea43fd3aea9c9cc74ea1c2d3a33748510ad2ce395169a6ba8174",
+    "status": "OK"
+  },
+  "matched_entry": {
+    "entry_hash": "3f3d071c2d19ea43fd3aea9c9cc74ea1c2d3a33748510ad2ce395169a6ba8174",
+    "key": "run-20261111T031107Z-6a0895d1",
+    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "record": {
+      "created_at": "20261111T031107Z",
+      "critical_false_negative_rate": 0.0,
+      "data_origin": "synthetic",
+      "dataset_sha256": "fbe0a1b143fa8a9b402df3348cd771bafedca5524f9c8e211f6421f35081799b",
+      "f1": 1.0,
+      "preflight_status": "PASSED",
+      "run_id": "run-20261111T031107Z-6a0895d1",
+      "task_id": "settler-exception-resolution-codes",
+      "test_sha256": "f16df531a12bb6e61349e92f62e0e5ca95c81550af0424a692788077b96cdb31"
+    },
+    "seq": 1
+  },
+  "model_manifest": null,
+  "preflight_status": "PASSED",
+  "provenance": {
+    "code_digest": "74e457e65b67b6e95a517461cfebae6e592f09a7efdf940d4493cb6b14e44cf0",
+    "evidence_entry_hash": "3f3d071c2d19ea43fd3aea9c9cc74ea1c2d3a33748510ad2ce395169a6ba8174",
+    "evidence_key": "run-20261111T031107Z-6a0895d1",
+    "evidence_ledger_path": "/home/scott/repos/Foundry/examples/case-study-exception-codes/task/runs/evidence.jsonl",
+    "evidence_seq": 1,
+    "runtime": "offline_cpu"
+  },
+  "provenance_status": "PROVENANCE_VERIFIED",
+  "run_id": "run-20261111T031107Z-6a0895d1",
+  "status": "COMPLETED"
+}

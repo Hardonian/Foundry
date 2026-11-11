@@ -76,7 +76,7 @@ Read this before building on Foundry:
 - Evidence hashes are **metadata**, not encrypted or tamper-proof storage.
 - Synthetic self-consistency is **not pilot accuracy**. The synthetic dataset is constructed programmatically; its split is seed-stable within the documented Python runtime.
 - No model weights or customer data are included in this project.
-- The first worked case study — a real fine-tuned open-weight model promoted through the refinery with a public evidence bundle — is the next milestone. See the roadmap in issues #1–#3.
+- The first worked case study shipped: Settler exception-resolution coding — a Qwen2.5-Coder-0.5B LoRA promoted through the refinery with a public, Ed25519-signed evidence bundle (`examples/case-study-exception-codes/`). Faithful keyword-baseline: 0.7875 macro-F1 with 96/160 critical notes miscoded; signed run verdict: `ALLOWED_REVIEW_REQUIRED`, macro-F1 1.000, zero critical misses on the frozen synthetic split — read that section's Limitations before quoting the number.
 
 ## Why trust the boring parts
 

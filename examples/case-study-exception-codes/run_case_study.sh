@@ -64,6 +64,8 @@ MANIFEST
 "${FOUNDRY[@]}" refinery attach-license "$RUN_ID" --manifest "$TASK/manifest.json" \
   --output-root "$TASK/runs" > "$TASK/attach_license.json"
 
+# v0.2.1 signing needs the optional [signing] extra; install idempotently.
+"$VENV/bin/pip" show cryptography >/dev/null 2>&1 || "$VENV/bin/pip" install -q cryptography==50.0.2
 if [ ! -f "$TASK/keys/sign.pem" ]; then
   "${FOUNDRY[@]}" refinery keygen --out "$TASK/keys/sign.pem" > "$TASK/keys/keygen.json"
 fi

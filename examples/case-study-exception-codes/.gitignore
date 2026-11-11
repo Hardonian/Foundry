@@ -1,5 +1,8 @@
-# local-only artifacts: trained adapter, evidence runs, signing keys, logs
+# local-only artifacts: trained adapter, run dirs, signing keys, logs.
+# The evidence ledger itself (task/runs/evidence.jsonl) IS committed — the
+# signed chain is the point of the exercise; per-run dirs are reproducible.
 task/adapter/
-task/runs/
 task/keys/
+task/runs/run-*/
+task/runs/*.lock
 *.log
