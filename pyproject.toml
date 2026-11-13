@@ -4,16 +4,73 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hardonian-foundry"
-version = "0.2.1"
+version = "0.3.0"
 description = "Evidence-first model lifecycle: tamper-evident runs and fail-closed promotion gates"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+dependencies = []
 
 [project.optional-dependencies]
 signing = ["cryptography>=42.0"]
+dev = [
+  "cryptography>=42.0",
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.15.0",
+  "mypy>=1.10",
+  "bandit>=1.8",
+  "build>=1.2",
+  "pyyaml>=6.0",
+  "pillow>=10.0",
+]
+train = [
+  "torch>=2.5.0",
+  "transformers>=4.48.0",
+  "peft>=0.14.0",
+  "accelerate>=1.4.0",
+  "safetensors>=0.4.5",
+]
+all = ["hardonian-foundry[signing,dev,train]"]
 
 [project.scripts]
 foundry = "hardonian_foundry.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests", "scripts", "examples"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "BLE", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["hardonian_foundry"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["hardonian_foundry"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

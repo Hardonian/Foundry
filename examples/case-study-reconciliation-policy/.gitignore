@@ -1,0 +1,5 @@
+# Local run outputs, signing keys, and logs are not committed.
+task/keys/
+task/runs/
+task/*.jsonl.tmp
+*.log

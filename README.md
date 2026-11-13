@@ -13,78 +13,89 @@
 
 AI pipelines treat model promotion as a vibe check: the loss curve looked fine, the demo worked, so the artifact shipped. When a model makes decisions — exception triage, tool calls, money-adjacent judgments — nobody can show *what evidence* justified deploying it.
 
-Foundry makes that evidence the gate. Dataset validation, preflight safety/licensing/resource checks, hash-chained run records, and a promotion verdict that refuses to say yes without required evidence artifacts.
+Foundry makes that evidence the gate. Dataset validation, preflight safety/licensing/resource checks, hash-chained run records, external head anchoring, M-of-N Ed25519 keyring verification, and a promotion verdict that refuses to say yes without complete, untampered evidence.
 
-Promotion is the interesting output. Missing or invalid evidence blocks it;
-eligible task-mode runs can produce `ALLOWED_REVIEW_REQUIRED`, not automatic
-promotion. See [the refinery documentation](docs/refinery.md) for the gates.
+Promotion is the interesting output. Missing or invalid evidence blocks it (`BLOCKED`, exit `2`); eligible runs with complete signed evidence produce `ALLOWED_REVIEW_REQUIRED` (exit `0`), where a human still signs off. See [the refinery documentation](docs/refinery.md) for the full gate specification.
 
-**Security:** v0.2.0's promotion gate is vulnerable; upgrade to v0.2.1 and
-reassess its promotion decisions. Legacy signatures are blocked: create a new
-run, supply or attach an allowed license before signing, then sign and promote
-the new run. A signature binds supplied evidence, not actual model weights,
-predictor execution, or the truth of a license claim. Detecting ledger rollback
-requires a trusted external head/checkpoint. See the [changelog](CHANGELOG.md).
+**Security:** v0.2.0's promotion gate is vulnerable; upgrade to v0.2.1+ / v0.3.0 and reassess its promotion decisions. Legacy `v1` signatures are blocked: create a new run, supply or attach an allowed license before signing, then sign, anchor, and promote the new run. A signature binds supplied evidence, not actual model weights, predictor execution, or the truth of a license claim. Detecting ledger rollback requires a trusted external head/checkpoint (`--expected-head` / `refinery anchor`). See [CHANGELOG.md](CHANGELOG.md).
 
 ## What works today
 
-Every command below is verified by CI (`offline-baseline`) on every push:
+Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos-latest`) and verified offline on every push:
 
 | Command | What it does |
 |---|---|
-| `foundry doctor` | Environment and self-health check |
-| `foundry demo` | Deterministic synthetic baseline run |
-| `foundry refinery validate-dataset` | Integrity, uniqueness and splitability checks on the synthetic dataset |
-| `foundry refinery preflight` | Safety, resource and licensing checks before any run |
-| `foundry refinery run` | End-to-end evaluation with a hash-chained, tamper-evident run record |
-| `foundry refinery inspect <run_id>` | Re-verify a run against the evidence ledger |
-| `foundry refinery promote <run_id>` | Fail-closed promotion verdict with explicit missing-evidence reasons |
-
-The baseline runs offline on CPU without network calls.
+| `foundry --version` / `doctor [--verbose]` | Package version and offline environment/extra diagnostics |
+| `foundry demo` / `eval` / `policy-demo` | Deterministic synthetic reconciliation & tool-policy demonstrations |
+| `foundry refinery validate-dataset` | Integrity, uniqueness, leakage, and splitability checks (`--data` or `--task-spec`) |
+| `foundry refinery preflight` | Safety, runtime, storage, and licensing checks (`--task-spec`, `--manifest`) |
+| `foundry refinery run` | End-to-end evaluation with hash-chained ledger and portable `run.json` |
+| `foundry refinery inspect <run_id>` | Re-verify run provenance from genesis (plus `--expected-head` / `--expected-count`) |
+| `foundry refinery promote <run_id>` | Fail-closed promotion gate with `--keyring` (M-of-N quorum/revocation) & anchor checks |
+| `foundry refinery attach-license` | Bind SPDX allowlist and data-origin decision into the ledger before signing |
+| `foundry refinery keygen --out <pem>` | Generate an Ed25519 private key (mode `0600` on POSIX, owner-restricted on Windows) |
+| `foundry refinery sign <run_id>` | Verify `run.json` against seq-1 digest and append `v2` Ed25519 signature |
+| `foundry refinery list` / `diff` | List tracked runs and diff metrics/provenance between runs |
+| `foundry refinery anchor` / `export-bundle` | Emit external head checkpoint and portable SHA-256-verified evidence bundles |
+| `foundry refinery artifact {add,verify,list}` | Local content-addressed artifact store with SHA-256 verification |
+| `foundry provider` / `provider predict` | Opt-in loopback provider probe & batch JSONL predictions (fails closed to `UNAVAILABLE`) |
+| `foundry registry {list,promote}` | Fail-closed registry gate requiring `--keyring` and verified run evidence |
 
 ## Quick start
 
 ```sh
 git clone https://github.com/Hardonian/Foundry && cd Foundry
-python3 -m venv .venv && .venv/bin/pip install .
-.venv/bin/foundry doctor
+python3 -m venv .venv && .venv/bin/pip install ".[signing]"
+.venv/bin/foundry doctor --verbose
 .venv/bin/foundry refinery run --output-root .foundry/runs
 .venv/bin/foundry refinery promote <run_id> --output-root .foundry/runs   # exits 2, by design
 ```
 
-Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry.cli <command>`.
-The package name `hardonian-foundry` is reserved for PyPI publication. Check the
-[release version](https://github.com/Hardonian/Foundry/releases) before installing
-a wheel; v0.2.0 remains vulnerable and may still be the latest published release.
+Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry.cli <command>` (or `$env:PYTHONPATH="src"` on Windows PowerShell).
+
+Optional extras in [pyproject.toml](pyproject.toml):
+- `.[signing]` — Ed25519 signing/verification (`cryptography`)
+- `.[dev]` — signing + `pytest`, `pytest-cov`, `ruff`, `mypy`, `bandit`, `build`, `pillow`, `pyyaml`
+- `.[train]` — offline LoRA training stack (`torch`, `transformers`, `peft`, `accelerate`, `safetensors`)
+- `.[all]` — all optional dependencies
+
+## Worked Case Studies
+
+| Case Study | Offline Weights Needed? | What It Demonstrates |
+|---|---|---|
+| [examples/case-study-exception-codes](examples/case-study-exception-codes/README.md) | Optional (committed signed evidence replays offline) | Qwen2.5-Coder-0.5B LoRA vs Settler keyword regex, plus `standard`, `adversarial-noisy`, and `imbalanced` (4% critical) dataset profiles |
+| [examples/case-study-agent-tool-gate](examples/case-study-agent-tool-gate/README.md) | **None** (runs in seconds) | Agent tool-call safety (`ALLOW_PROPOSAL`, `DENY`, `ESCALATE_REVIEW`) against prompt injection, path traversal, and argument smuggling |
+| [examples/case-study-reconciliation-policy](examples/case-study-reconciliation-policy/README.md) | **None** (runs in seconds) | `synthetic_policy.assess_with_suggestion` deterministic minor-unit arithmetic overriding untrusted model suggestions |
+
+Replay the committed signed exception-codes evidence chain on any OS without modifying committed run files:
+
+```sh
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery inspect run-20261111T031107Z-6a0895d1 --output-root examples/case-study-exception-codes/task/runs
+PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote run-20261111T031107Z-6a0895d1 --output-root examples/case-study-exception-codes/task/runs --keyring examples/case-study-exception-codes/task/keyring.json
+```
 
 ## Documentation
 
 | Document | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Component boundaries and lifecycle contracts |
-| [docs/refinery.md](docs/refinery.md) | The refinery workflow: inputs, outputs, evidence format, gate semantics |
-| [docs/training.md](docs/training.md) | Bounded offline CPU LoRA smoke: preflight, restrictions, limitations |
+| [docs/architecture.md](docs/architecture.md) | Mermaid architecture/sequence diagrams, module boundaries, threat model, `task_eval` / `signing` / `training_utils` contracts |
+| [docs/refinery.md](docs/refinery.md) | Full refinery CLI reference, gate semantics, exit codes, anchoring, Windows/POSIX behavior |
+| [docs/training.md](docs/training.md) | Cross-platform preflight, batched CPU LoRA training/eval, model registry config, DPO/RLVR/GPU adapter contracts |
+| [docs/dataset-card.md](docs/dataset-card.md) | Dataset taxonomies, spurious-shortcut warnings, and consented pilot migration checklist |
 
 ## Honest status
 
 Read this before building on Foundry:
 
-- This is an **early, offline, CPU-only research baseline**. The deterministic heuristics are **not a trained model**, are **not commercially validated**, and process **synthetic inputs only**.
-- **Do not deploy** for real financial data or autonomous tool execution. No inference server, production training system, authenticated tenant isolation, production API, production-grade evidence store, or usable model registry is implemented yet.
-- `registry promote` **always fails closed**. Outputs are suggestions only and always require human review.
-- The opt-in OpenAI-compatible provider adapter must point at an **operator-approved loopback server** and sends synthetic samples only. Errors return `UNAVAILABLE` with nonzero exit and **no heuristic substitution**; a successful response is always `review-required`. It is not verified against a live model-tools deployment (the inspected `app.main` returns HTTP 501 for `/v1/chat/completions`). No real provider call is made by tests.
-- Evidence hashes are **metadata**, not encrypted or tamper-proof storage.
-- Synthetic self-consistency is **not pilot accuracy**. The synthetic dataset is constructed programmatically; its split is seed-stable within the documented Python runtime.
-- No model weights or customer data are included in this project.
-- The first worked case study shipped: Settler exception-resolution coding — a Qwen2.5-Coder-0.5B LoRA promoted through the refinery with a public, Ed25519-signed evidence bundle (`examples/case-study-exception-codes/`). Faithful keyword-baseline: 0.7875 macro-F1 with 96/160 critical notes miscoded; signed run verdict: `ALLOWED_REVIEW_REQUIRED`, macro-F1 1.000, zero critical misses on the frozen synthetic split — read that section's Limitations before quoting the number.
+- **Synthetic-first baseline:** Built-in fixtures and case studies use **synthetic data only**. Optional `consented_pilot` / `redacted_eval` tiers in `licensing.py` and `evidence.py` require explicit `governance_attestation` and remain disallowed by default.
+- **Human review is mandatory:** `ALLOWED_REVIEW_REQUIRED` certifies evidence completeness at a verified ledger head—never production accuracy or unattended deployment readiness (`review_rate = 1.0`, `financial_write = false`, `executed = false`).
+- **No production serving or remote KMS/HSM:** Foundry is an evaluation and promotion gate, not a production inference gateway, IAM/SSO service, or remote immutable HSM audit service.
+- **Loopback provider guard:** The opt-in `provider` adapter defaults to operator-approved loopback origins (optional TLS/bearer env auth requires explicit opt-in), disables redirects/proxies, enforces timeouts/circuit breakers, and never substitutes heuristics on failure (`UNAVAILABLE`).
+- **Synthetic self-consistency is not pilot accuracy:** High synthetic scores (such as `1.000` on closed-vocabulary templates) demonstrate structural gate behavior, not real-world generalization. See [docs/dataset-card.md](docs/dataset-card.md).
 
-## Why trust the boring parts
+## Contributing & Security
 
-Every claim in this README is a command you can run in 60 seconds, and CI runs the full refinery pipeline offline on every push. Gates fail closed; errors are loud; nothing silently falls back.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Start with the [`good first issue` labels](https://github.com/Hardonian/Foundry/labels/good%20first%20issue). Security issues: see [SECURITY.md](SECURITY.md) — no GitHub issues for vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security vulnerabilities: see [SECURITY.md](SECURITY.md) — never open public GitHub issues for vulnerabilities or submit credentials/customer data.
 
 ## License
 

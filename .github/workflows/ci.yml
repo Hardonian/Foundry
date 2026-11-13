@@ -4,8 +4,132 @@ permissions:
   contents: read
 # Security notes: actions are pinned to full commit SHAs; this workflow interpolates no
 # github.event.* values into run: commands, so there is no script-injection surface.
+
 jobs:
   test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --quiet --upgrade "pip>=26.2"
+          python -m pip install --quiet -e ".[signing]" pytest pytest-cov ruff mypy pillow pyyaml
+      - name: Offline unit tests (unittest)
+        run: python -m unittest discover -s tests -v
+      - name: Pytest with coverage gate
+        run: pytest --cov=hardonian_foundry --cov-fail-under=85
+      - name: Ruff lint
+        run: ruff check .
+      - name: Type check (mypy)
+        run: mypy src
+      - name: Compile check
+        run: python -m compileall -q src tests scripts examples
+      - name: Synthetic & Refinery CLI smoke
+        run: |
+          foundry --version
+          foundry doctor --verbose
+          foundry demo
+          foundry eval
+          foundry policy-demo
+          foundry refinery validate-dataset
+          foundry refinery preflight
+          foundry refinery run --output-root .foundry/ci_runs
+          foundry refinery list --output-root .foundry/ci_runs
+      - name: Cloned case-study signed replay smoke
+        run: |
+          foundry refinery inspect run-20261111T031107Z-6a0895d1 --output-root examples/case-study-exception-codes/task/runs
+          foundry refinery promote run-20261111T031107Z-6a0895d1 --output-root examples/case-study-exception-codes/task/runs --keyring examples/case-study-exception-codes/task/keyring.json
+      - name: Zero-weight case studies smoke
+        run: |
+          foundry refinery validate-dataset --task-spec examples/case-study-agent-tool-gate/task/spec.json
+          foundry refinery preflight --task-spec examples/case-study-agent-tool-gate/task/spec.json
+          foundry refinery run --task-spec examples/case-study-agent-tool-gate/task/spec.json --baseline-predictions examples/case-study-agent-tool-gate/task/baseline.jsonl --model-predictions examples/case-study-agent-tool-gate/task/model.jsonl --output-root .foundry/ci_tool_gate
+          foundry refinery validate-dataset --task-spec examples/case-study-reconciliation-policy/task/spec.json
+          foundry refinery preflight --task-spec examples/case-study-reconciliation-policy/task/spec.json
+          foundry refinery run --task-spec examples/case-study-reconciliation-policy/task/spec.json --baseline-predictions examples/case-study-reconciliation-policy/task/baseline.jsonl --model-predictions examples/case-study-reconciliation-policy/task/model.jsonl --output-root .foundry/ci_reconcil_policy
+          foundry refinery anchor --output-root examples/case-study-exception-codes/task/runs --out .foundry/replay-anchor.json
+          foundry refinery artifact add examples/case-study-agent-tool-gate/task/spec.json --store-dir .foundry/ci_artifacts --name tool-gate-spec --kind spec
+          foundry refinery artifact list --store-dir .foundry/ci_artifacts
+
+  no-signing-extra:
+    name: no-signing-extra fail-closed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install without signing extra
+        run: |
+          python -m pip install --quiet --upgrade "pip>=26.2"
+          python -m pip install --quiet --no-deps -e .
+      - name: Verify fail-closed signing absence
+        run: |
+          python -c "from hardonian_foundry.signing import backend_available; assert not backend_available(), 'expected signing backend unavailable'"
+          python -m unittest tests/test_evidence.py tests/test_licensing.py tests/test_tenancy.py tests/test_baseline.py tests/test_synthetic_policy.py tests/test_content_datasets.py tests/test_provider.py -v
+          python - <<'PY'
+          import json, subprocess, tempfile
+          from pathlib import Path
+
+          with tempfile.TemporaryDirectory() as td:
+              root = Path(td) / "runs"
+              run_proc = subprocess.run(
+                  ["foundry", "refinery", "run", "--output-root", str(root)],
+                  capture_output=True, text=True, check=True,
+              )
+              run_id = json.loads(run_proc.stdout)["run_id"]
+              kg = subprocess.run(
+                  ["foundry", "refinery", "keygen", "--out", str(Path(td) / "k.pem")],
+                  capture_output=True, text=True, check=False,
+              )
+              assert kg.returncode != 0, f"expected keygen to fail closed, got {kg.returncode}"
+              prom = subprocess.run(
+                  ["foundry", "refinery", "promote", run_id, "--output-root", str(root)],
+                  capture_output=True, text=True, check=False,
+              )
+              assert prom.returncode == 2, f"expected promote blocked exit 2, got {prom.returncode}"
+              data = json.loads(prom.stdout)
+              assert "cryptographic_promotion_signature" in data["missing_evidence"], data
+          PY
+
+  package-smoke:
+    name: wheel build and install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --quiet --upgrade "pip>=26.2"
+          python -m pip install --quiet build
+          python -m build
+      - name: Install wheel into clean venv and run smoke
+        run: |
+          python -m venv .wheel-venv
+          .wheel-venv/bin/python -m pip install --quiet --upgrade "pip>=26.2"
+          .wheel-venv/bin/pip install --quiet dist/*.whl
+          .wheel-venv/bin/foundry --version
+          .wheel-venv/bin/foundry doctor
+          .wheel-venv/bin/foundry demo
+
+  security:
+    name: security & static checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -15,48 +139,14 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Offline unit tests
-        run: PYTHONPATH=src python -m unittest discover -s tests -v
-      - name: Synthetic smoke
-        run: PYTHONPATH=src python -m hardonian_foundry.cli demo
-      - name: Refinery smoke
-        run: |
-          PYTHONPATH=src python -m hardonian_foundry.cli refinery validate-dataset
-          PYTHONPATH=src python -m hardonian_foundry.cli refinery preflight
-          PYTHONPATH=src python -m hardonian_foundry.cli refinery run --output-root .foundry/ci_runs
-      - name: Compile
-        run: python -m compileall -q src tests
       - name: Install pinned security tooling
         # pip>=26.2 first: pip-audit project mode audits the ephemeral env, which
         # bootstraps with the host pip; older pip versions carry known CVEs.
         run: python -m pip install --quiet --upgrade 'pip>=26.2' && python -m pip install --quiet ruff==0.17.4 bandit==1.9.4 pip-audit==2.10.1 'cryptography==50.0.2'
-      - name: Signed promotion regression tests
-        run: |
-          PYTHONPATH=src python -c 'from hardonian_foundry.signing import backend_available; assert backend_available(), "signing backend unavailable"'
-          PYTHONPATH=src python -m unittest discover -s tests -p test_task_mode.py -v
-      - name: Ruff lint (lifecycle and refinery modules)
-        run: >-
-          ruff check
-          src/hardonian_foundry/evidence.py
-          src/hardonian_foundry/licensing.py
-          src/hardonian_foundry/tenancy.py
-          src/hardonian_foundry/refinery.py
-          src/hardonian_foundry/task_eval.py
-          src/hardonian_foundry/signing.py
-          src/hardonian_foundry/cli.py
-          tests/test_evidence.py
-          tests/test_licensing.py
-          tests/test_tenancy.py
-          tests/test_refinery.py
-          tests/test_task_mode.py
-          examples/case-study-exception-codes/generate_dataset.py
-          examples/case-study-exception-codes/baseline_predict.py
-          examples/case-study-exception-codes/train_lora.py
-          examples/case-study-exception-codes/model_predict.py
-          examples/case-study-exception-codes/finalize_spec.py
-          examples/case-study-exception-codes/show_pubkey.py
+      - name: Ruff lint
+        run: ruff check .
       - name: Bandit (medium and above)
-        run: bandit -q -r src --severity-level medium
+        run: bandit -q -r src scripts examples --severity-level medium
       - name: Pip audit
         run: pip-audit --progress-spinner off
       - name: Gitleaks

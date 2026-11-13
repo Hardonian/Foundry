@@ -1,3 +1,4 @@
-include CHANGELOG.md
+include CHANGELOG.md CONTRIBUTING.md LICENSE README.md SECURITY.md
 recursive-include docs *.md *.cast *.gif *.png
 recursive-include scripts *.py
+recursive-include examples *.py *.md *.sh
