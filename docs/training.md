@@ -1,37 +1,100 @@
-# Offline synthetic CPU LoRA smoke
+# Offline Synthetic Training & Evaluation Stack
 
-This is an early demonstrator, not a production training platform. It uses only built-in, generated synthetic reconciliation labels. Do not use real or customer data. No model or adapter is promoted, deployed, published, or proven suitable for any production task.
+Foundry includes an offline training and evaluation stack (`src/hardonian_foundry/training_utils.py`, `scripts/`, and `examples/case-study-exception-codes/`) designed for reproducible synthetic experiments and Foundry task-mode provenance binding.
 
-The existing local cache must contain `Qwen/Qwen2.5-Coder-0.5B-Instruct` at revision `ea3f2471cf1b1f0db85067f1ef93848e38e88c25`. At this revision, the upstream model card identifies Apache-2.0. Confirm the current license, model card, attribution/redistribution obligations, and any derivative rights before each use or distribution: https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct/tree/ea3f2471cf1b1f0db85067f1ef93848e38e88c25 . The runner verifies the pinned safetensors SHA-256 and pinned Git blob IDs for required config/tokenizer files, refuses custom remote code, turns off Hub networking and implicit credentials, and does not download weights.
+> **Scope Warning:** Built-in training workflows target synthetic datasets (`data_origin: "synthetic"`). No trained adapter is automatically promoted or proven suitable for production financial data without independent human review and consented pilot validation.
 
-Use an existing isolated CPU environment with Python 3.12, torch 2.6.0+cpu, transformers 4.49.0, peft 0.14.0, accelerate 1.4.0, and safetensors 0.8.0. The smoke was exercised with these installed versions. The repository does not yet provide a locked, clean-room installation of this training stack; do not silently upgrade packages in an existing environment.
+---
 
-Set `HF_HOME` to a verified cache and `FOUNDRY_RUN_ROOT` to an existing, owner-only directory on a filesystem with at least 10 GiB free and less than 80% utilization. For genuine private IP or sensitive data, use separately provisioned encrypted, access-controlled storage; owner-only permissions alone do not encrypt data. No raw sensitive data is supported by this demonstration.
+## 1. Offline Integrity & Snapshot Verification
 
-Run with the Python interpreter from the isolated CPU environment:
+All training and prediction runners share `hardonian_foundry.training_utils`:
 
-    python scripts/train_synthetic_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --steps 4 --threads 4
+- **Network & Credential Isolation:** `set_offline_env()` sets `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`, and enforces `local_files_only=True`, `trust_remote_code=False`, and `token=False` on both tokenizer and model loaders.
+- **Snapshot Pinning (`verify_snapshot`, `verify_pinned_blobs`, `load_verified_snapshot`):** Verifies `model.safetensors` SHA-256 (`sha_file`) and pinned Git blob SHA-1 digests (`git_blob_sha1`) for configuration/tokenizer files, and rejects any `config.json` containing `auto_map` custom code entries.
+- **Model Registry Config (`model_registry`, `resolve_model_spec`):** JSON registry configuration (`--model-registry`) allows registering additional base models, pinned revisions, safetensors/blob digests, and LoRA `target_modules` beyond the default `Qwen/Qwen2.5-Coder-0.5B-Instruct` (`ea3f2471cf1b1f0db85067f1ef93848e38e88c25`, Apache-2.0 upstream model card).
 
-The process limits CPU threads and steps, checks RAM and disk, uses a nonblocking cooperative lock, creates a fresh mode-0700 run directory, trains attention LoRA on CPU, compares base and adapter teacher-forced losses on four separate synthetic examples, saves a safetensors adapter, reloads it offline, and verifies loss agreement. The run result includes model/data/script/adapter hashes, dependency versions, exact revision, losses, seed, duration and limitations. A lock protects only participating jobs; it does not reserve GPU resources. Failures can leave a partial directory without `result.json`; inspect it and preserve or clean up deliberately.
+---
 
-To compare base and adapter greedy generation on the same four synthetic cases from a completed run, set `FOUNDRY_TRAIN_RUN` to that private run directory and execute:
+## 2. Cross-Platform Preflight & Cooperative Locking
 
-    python scripts/evaluate_synthetic_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+`training_utils.py` removes POSIX-only assumptions so preflight checks run cleanly on **Linux, macOS, and Windows**:
 
-The evaluation checks the model, dataset, adapter-weight and adapter-configuration hashes, only accepts the built-in synthetic dataset, uses an explicit attention mask, bounds output tokens, and records exact outputs, false-negative rate, regressions, and generation-limit hits. Older training manifests lacking an adapter-configuration hash are rejected; they are not silently upgraded. These hashes detect accidental or unauthorized changes only if the manifest itself is trusted; they are not signed provenance. It writes a separate private result directory. These holdout cases were already observed through teacher-forced loss evaluation: they are not pristine. The evaluator is not a promotion gate and cannot establish performance on real records.
+- **Private Output Directory (`verify_private_dir`, `mkdir_private`, `chmod_private`):**
+  - On POSIX: verifies directory existence, `st_uid == os.getuid()`, and strict `0700` permissions (`st_mode & 0o077 == 0`).
+  - On Windows (`os.name == "nt"`): checks directory ownership/ACL restrictions via Win32 `advapi32`/`kernel32` without crashing on missing `os.getuid()`.
+- **Memory & Disk Checks (`available_ram_bytes`, `check_disk_space`):**
+  - On POSIX: reads `os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")` (with `vm_stat` fallback on macOS).
+  - On Windows: queries `GlobalMemoryStatusEx` via `ctypes`.
+  - Enforces free disk headroom (>= 10 GiB and < 80% utilization where configured) before loading weights or writing checkpoints.
+- **Cooperative Locking (`acquire_training_lock`, `TrainingLockError`):** Uses `fcntl.flock` on POSIX and bounded non-blocking `msvcrt.locking` (`LK_NBLCK`) on Windows. Cooperative locks protect participating jobs against concurrent write collisions; they do not reserve hardware compute.
 
-Warnings: Transformers warns that sliding-window attention is not implemented for the selected eager path; the cached configuration has `use_sliding_window: false`, and the smoke's sequences are at most 256 tokens, but this does not validate long-context behavior. An earlier runner revision also emitted a PEFT save warning because it loaded the base by Hub ID; the runner now loads the exact verified local snapshot directly. The adapter config may therefore include the local snapshot path; treat it as private metadata. Investigate runtime warnings before any serious training. Lower toy held-out loss is not a measured accuracy improvement.
+---
 
-A separate fixed-budget experiment compares the original base and a newly trained LoRA adapter on group-disjoint, balanced synthetic records. It creates 48 training, 16 validation and 24 test cases with non-overlapping base amounts and different wording. It writes the split hashes and fixed 96-step budget before training; validation is reserved and not used for tuning, and the test is first scored after training. An observed test is no longer pristine. All splits use related generated templates, so disjoint groups do not prove broad generalization or absence of pretraining contamination.
+## 3. Case-Study LoRA Training & Batched Inference
 
-    python scripts/experiment_balanced_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --threads 4
+### 3.1 Training (`examples/case-study-exception-codes/train_lora.py`)
 
-The experiment retains a private synthetic dataset, preregistration, adapter and result manifest. It compares exact output labels using the same prompts and greedy decoding for base and adapter and verifies reloaded-adapter generation. For interpretation also inspect case-normalized outcomes: strict schema scoring marks `Matched` invalid, even though it is semantically the matched label. Do not treat the scores or a saved adapter as a promotion decision.
+```sh
+python examples/case-study-exception-codes/train_lora.py \
+  --hf-home "$HF_HOME" \
+  --task-dir examples/case-study-exception-codes/task \
+  --output examples/case-study-exception-codes/task/adapter \
+  --epochs 3 --batch-size 4 --grad-accum 8 --threads 8
+```
 
-A separate out-of-template synthetic challenge uses negative and large amounts, comma separators, missing fields, and currency mismatches. After the balanced adapter has been trained, set `FOUNDRY_TRAIN_RUN` to its run directory and execute:
+Key behaviors and flags:
+- **Fail-Closed Truncation Guard:** Rejects training runs if `--max-seq` truncates any encoded training example (rather than silently dropping label tokens).
+- **Exact Gradient Accumulation Remainder (`grad_accum_window_size`, `should_step_grad_accum`):** Rescales trailing micro-batches cleanly when `len(train_rows)` is not evenly divisible by `--grad-accum`.
+- **Padded Micro-Batching & LR Schedule:** Dynamic micro-batching (`--batch-size`), scheduler options (`--scheduler`, `--warmup-ratio`, `--max-grad-norm`), validation monitoring (`--eval-val` / `--no-eval-val`), and checkpointing (`--save-checkpoints`, `--resume`).
+- **Device, Method & Registry Selection:** `--device` (`cpu` default; optional `auto`, `cuda`, `mps`, `dml`), `--method` (`lora`, plus structured contracts for `qlora`, `dpo` with `--preference-data`, and `rlvr`), and `--model-registry`.
 
-    PYTHONPATH=src python scripts/challenge_lora.py --hf-home "$HF_HOME" --output-root "$FOUNDRY_RUN_ROOT" --run-dir "$FOUNDRY_TRAIN_RUN" --threads 4
+### 3.2 Provenance Pinning (`finalize_spec.py`)
 
-The fixed challenge records and scoring protocol are saved before inference, not independently timestamped or signed. In newly generated protocol files, `training_on_challenge` is `null` (unknown) rather than the earlier boolean `false`: the old value asserted absence of training without proof. `training_on_challenge_assessment` describes the limited checks performed. Consumers must explicitly handle `null`, not treat it as proof of either training or non-training. Both base and frozen adapter see identical inputs; the challenge is no longer unseen after use and must not be used for training or checkpoint selection. Exact prompt overlap with the supplied training dataset is checked, but other contamination is not ruled out. The result also scores the existing deterministic policy, with paired strict wins and losses for each model. The baseline receives structured fields while the models receive text, and the oracle and policy encode the same rules: its score is rule self-consistency, not independent validation or a fair test of parsing. Baseline source, evaluation script and artifacts are hashed, but hashes do not authenticate provenance; there is no signature enforcement or promotion decision here. Incomplete amounts or different currencies require `review_required`; an incorrect `matched` output on those cases is an unsafe suggestion. The model cannot authorize anything. `PYTHONPATH=src python -m hardonian_foundry.cli policy-demo` runs a separate synthetic-only deterministic gate; the `assess_with_suggestion` function compares an untrusted model label without letting it alter the deterministic category. This gate always requires human review, performs no financial writes, and is not wired into a production service.
+```sh
+python examples/case-study-exception-codes/finalize_spec.py \
+  --task-dir examples/case-study-exception-codes/task \
+  --adapter-dir examples/case-study-exception-codes/task/adapter \
+  [--verify] [--json]
+```
 
-Not implemented: checkpoint/resume, dataset imports, QLoRA, GPU training, resource reservation, a full adversarial evaluation, production serving and promotion. DPO, distillation and RLVR are not implemented. Do not bypass these limitations by calling the adapter a trained product.
+Injects `adapter_sha256`, `revision`, and `base_model_id` into `spec.json`, refuses to overwrite an already-finalized spec, and supports `--verify` and `--json` to validate an existing binding cleanly.
+
+### 3.3 Batched Evaluation (`model_predict.py`)
+
+```sh
+python examples/case-study-exception-codes/model_predict.py \
+  --hf-home "$HF_HOME" \
+  --task-dir examples/case-study-exception-codes/task \
+  --adapter-dir examples/case-study-exception-codes/task/adapter \
+  --out examples/case-study-exception-codes/task/model.jsonl \
+  --batch-size 8 --threads 8 [--constrained] [--base-only]
+```
+
+Key behaviors:
+- **Pre-Inference Integrity Verification:** Verifies `dataset_sha256`, `spec_sha256`, `base_weights_sha256`, and `adapter_sha256` against `train_manifest.json` and `spec.json` before decoding (supports `--base-only` for zero-shot baseline comparison).
+- **Left-Padded Batched Decoding (`torch.inference_mode()`, `batched_greedy_generate`):** Generates predictions in batches (`--batch-size`) with optional constrained decoding (`--constrained` via `LabelPrefixTrie` / `PrefixTrieLogitsProcessor`), recording per-case `latency_ms`, `confidence`, `raw_invalid`, and `latency_p95_ms` in `predict_manifest.json`.
+- **Boundary-Safe Allowlist Normalization (`to_label`):** Distinguishes `exact_allowlist_outputs`, `normalized_outputs`, and `mapped_to_undetermined`, preventing prefix collisions (e.g., `FOO` vs `FOO_BAR`). Unparseable generations fail closed to `UNDETERMINED`.
+
+Case-study helpers (`baseline_predict.py` and `show_pubkey.py`) also support `--json` for structured machine-readable output.
+
+---
+
+## 4. Synthetic Smoke, Validation Monitoring & OOD Challenge Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/train_synthetic_lora.py` | Bounded offline CPU smoke (`--batch-size`, `--device`, `--model-registry`) comparing teacher-forced base vs. adapter loss and reload agreement |
+| `scripts/evaluate_synthetic_lora.py` | Greedy generation on smoke cases (`--batch-size`, `--device`, `--model-registry`) checking model, dataset, adapter-weight, and adapter-config hashes |
+| `scripts/experiment_balanced_lora.py` | Group-disjoint balanced experiment (train / validation / held-out test) with per-epoch validation tracking, early stopping, `--emit-task-dir`, `--run-refinery`, and `--refinery-output-root` |
+| `scripts/challenge_lora.py` | Expanded 48-case (16/class) out-of-template numeric/currency/null OOD challenge set with `--emit-predictions` Foundry JSONL export |
+
+> **Holdout Hygiene:** Once a held-out test split or challenge file is scored, it is no longer pristine—never tune hyperparameters or select checkpoints on the test split.
+
+---
+
+## 5. Device & Post-Training Adapter Contracts (`qlora`, `dpo`, `rlvr`)
+
+`training_utils.py` (`get_training_hook`, `SFTAdapterHook`, `QLoRAAdapterHook`, `DPOAdapterHook`, `RLVRAdapterHook`, `compute_dpo_loss`, `RLVRVerifier`, `ExactMatchVerifier`) defines modular adapter interfaces across:
+- **Devices (`select_device`):** `cpu` (default, verified in offline CI), `cuda`, `mps`, `dml`, and `auto`.
+- **Adapter Methods:** `lora` / `sft` (active offline CPU default), plus structured contracts for `qlora`, `dpo`, and `rlvr`. Check `train_lora.py --help` and runner behavior before invoking non-default post-training modes; verify optional quantization/GPU packages (`bitsandbytes`, CUDA `torch`, etc.) in an isolated environment as they are not bundled or exercised in CPU-only CI runners.

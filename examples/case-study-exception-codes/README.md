@@ -90,10 +90,31 @@ and the Foundry training stack (Python 3.12, torch 2.6.0+cpu, transformers
 
 ```sh
 ~/venvs/foundry-train/bin/pip install -e ../../[signing]   # one package, one split impl
-python3 generate_dataset.py --out-dir task                  # frozen dataset + spec
+python3 generate_dataset.py --out-dir task                  # frozen dataset + spec (--profile standard)
 python3 baseline_predict.py --task-dir task --out task/baseline.jsonl
 bash run_case_study.sh                                      # train -> predict -> signed gate
 ```
+
+### Portable Replay Verification (No Weights Required)
+
+On any freshly cloned checkout (Linux, macOS, or Windows), you can replay and verify the committed signed evidence chain without training or modifying `task/run.json` / `task/runs/`:
+
+```sh
+PYTHONPATH=../../src python3 -m hardonian_foundry.cli refinery inspect run-20261111T031107Z-6a0895d1 --output-root task/runs
+PYTHONPATH=../../src python3 -m hardonian_foundry.cli refinery promote run-20261111T031107Z-6a0895d1 --output-root task/runs --keyring task/keyring.json
+```
+
+### Dataset Stress Profiles (`--profile`)
+
+`generate_dataset.py` preserves exact byte/record parity under `--profile standard --seed 20261110` (1,152 records) while offering two additional deterministic stress profiles for baseline and adapter evaluation:
+
+| Profile | Records | Critical Share | Baseline Macro-F1 | Baseline Critical FN Rate | What It Tests |
+|---|---:|---:|---:|---:|---|
+| `standard` (default) | 1,152 | 41.67% | 0.7875 | 0.6000 | First-match keyword ordering traps across 12 style families |
+| `adversarial-noisy` | 1,152 | 33.33% | 0.4792 | 1.0000 | Typos, abbreviations (`ccy`/`amt`/`dup`/`reconcil`), negation flips, multi-sentence conflicts, near-tie `UNDETERMINED` notes |
+| `imbalanced` | 1,200 | 4.00% | 0.8940 | 0.5625 | Rare critical escalations masked by high aggregate macro-F1 |
+
+To run weight-free offline case studies covering agent tool-call safety and deterministic reconciliation arithmetic override, see [case-study-agent-tool-gate](../case-study-agent-tool-gate/README.md) and [case-study-reconciliation-policy](../case-study-reconciliation-policy/README.md).
 
 `run_case_study.sh` is the whole story in one log: train the LoRA on CPU
 (32.4 min, 12 threads, loss converged by epoch 1), bind adapter provenance into

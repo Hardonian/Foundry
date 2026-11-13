@@ -1,0 +1,23 @@
+{
+  "baseline_must_improve": true,
+  "dataset_path": "data.jsonl",
+  "description": "Demonstrate deterministic integer minor-unit arithmetic (synthetic_policy.assess_with_suggestion) overriding untrusted model suggestions through Foundry task mode.",
+  "labels": [
+    "matched",
+    "amount_mismatch",
+    "review_required"
+  ],
+  "model": {
+    "adapter_name": "synthetic-policy-assess-override",
+    "adapter_sha256": "55c6ce206cbee505db1fc20e2b8152991dd5a2601746e6ccbf08718c04a0003a",
+    "base_model_id": "hardonian/synthetic-policy-arithmetic-gate",
+    "revision": "v1-integer-minor-units"
+  },
+  "notes": "Synthetic reconciliation policy-override dataset generated deterministically (seed=20261112).",
+  "schema_version": "1.0",
+  "split_seed": 20261112,
+  "task_id": "reconciliation-arithmetic-policy-override",
+  "thresholds": {
+    "macro_f1_min": 0.8
+  }
+}
