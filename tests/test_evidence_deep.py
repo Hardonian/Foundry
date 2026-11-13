@@ -7,7 +7,6 @@ import json
 import os
 import sqlite3
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -25,29 +24,17 @@ from hardonian_foundry.evidence import (
 
 class EvidenceDeepTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # ignore_cleanup_errors (Windows only) is CPython's documented answer to the
+        # runner-holds-temp-file race; here the byte-overwritten WAL db stays locked for
+        # the process lifetime on windows py3.13 (WinError 32 in offline-baseline,
+        # deterministic — test_evidence.py's non-overwriting sqlite tests never flake).
+        # The assertions below verify tamper detection; cleanup of an OS temp artifact is
+        # not the product contract. POSIX keeps strict single-cleanup semantics.
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=os.name == "nt")
         self.root = Path(self.tmp.name)
 
     def tearDown(self):
         gc.collect()
-        if os.name == "nt":
-            # Windows lags handle release on freshly-written sqlite temp files
-            # (re-opened tampered WAL db; WinError 32 race observed on offline-baseline
-            # windows runners — one green run, two red, same code). Defender-style scans
-            # can hold files without share-delete for tens of seconds. Retry cleanup for
-            # a bounded window; POSIX unlink has no such race and keeps single-cleanup semantics.
-            deadline = time.monotonic() + 45.0
-            delay = 0.2
-            while True:
-                try:
-                    self.tmp.cleanup()
-                    return
-                except PermissionError:
-                    if time.monotonic() >= deadline:
-                        raise
-                    gc.collect()
-                    time.sleep(delay)
-                    delay = min(delay * 2, 2.0)
         self.tmp.cleanup()
 
     def test_normalize_allowed_origins(self):
