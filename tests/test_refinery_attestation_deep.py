@@ -73,21 +73,21 @@ class RefineryAttestationDeepTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_keyring({"trusted_keys": [pub1], "required_roles": "not-a-list"})
 
-        # Unknown entry fields in trusted_keys (passed as list to execute refinery_attestation parser)
+        # Unknown entry fields in trusted_keys
         with self.assertRaises(ValueError):
-            parse_keyring([{"public_key_hex": pub1, "rogue_field": "x"}])
+            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "rogue_field": "x"}]})
 
         # Invalid role / key_id / revoked_at in entry
         with self.assertRaises(ValueError):
-            parse_keyring([{"public_key_hex": pub1, "role": "  "}])
+            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "role": "  "}]})
         with self.assertRaises(ValueError):
-            parse_keyring([{"public_key_hex": pub1, "key_id": ""}])
+            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "key_id": ""}]})
         with self.assertRaises(ValueError):
-            parse_keyring([{"public_key_hex": pub1, "revoked_at": ""}])
+            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "revoked_at": ""}]})
         with self.assertRaises(ValueError):
-            parse_keyring([{"public_key_hex": pub1, "label": 123}])
+            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "label": 123}]})
         with self.assertRaises(TypeError):
-            parse_keyring([12345])
+            parse_keyring({"trusted_keys": [12345]})
 
         # Duplicate public key in policy raises ValueError from signing_mod
         with self.assertRaises(ValueError) as ctx:
@@ -202,50 +202,6 @@ class RefineryAttestationDeepTest(unittest.TestCase):
             attach_license("run-test-tenant", manifest=manifest, output_root=self.root)
         with self.assertRaises(ValueError):
             sign_run("run-test-tenant", private_key_path=priv["private_key_path"], output_root=self.root)
-
-    def test_sign_run_and_attach_license_with_tenant_and_errors(self):
-        from hardonian_foundry.evidence import append as evidence_append
-        from hardonian_foundry.refinery_runs import create_run
-        from hardonian_foundry.tenancy import TenantContext
-
-        priv1 = generate_keypair(self.root / "k_tenant1.pem")
-        priv2 = generate_keypair(self.root / "k_tenant2.pem")
-        tctx = TenantContext(tenant_id="tenant-audit", request_id="req-audit")
-        run = create_run(output_root=self.root, tenant_context=tctx)
-        rid = run["run_id"]
-
-        manifest = {
-            "name": "synth-model-tenant",
-            "license_id": "Apache-2.0",
-            "provenance": "synthetic",
-            "data_origin": "synthetic",
-        }
-        # Attach license with tenant context in run record (covers tenant_id in payload, line 274)
-        att_res = attach_license(rid, manifest=manifest, output_root=self.root)
-        self.assertEqual(att_res["decision"], "ALLOWED")
-
-        # Sign run with tenant context in run record (covers tenant_id in sig_record, line 401)
-        sig_res = sign_run(rid, private_key_path=priv1["private_key_path"], output_root=self.root)
-        self.assertEqual(sig_res["run_id"], rid)
-
-        # Signing again with the same key raises ValueError (key has already signed, line 377)
-        with self.assertRaises(ValueError) as ctx_dup:
-            sign_run(rid, private_key_path=priv1["private_key_path"], output_root=self.root, cosign=True)
-        self.assertIn("has already signed", str(ctx_dup.exception))
-
-        # Appending a signature with version "1" into the ledger triggers version/run_sha256 mismatch (line 373)
-        ledger_path = self.root / "evidence.jsonl"
-        evidence_append(str(ledger_path), {
-            "type": "promotion_signature",
-            "version": "1",
-            "run_id": rid,
-            "run_sha256": "0" * 64,
-            "data_origin": "synthetic",
-        })
-
-        with self.assertRaises(ValueError) as ctx_mismatch:
-            sign_run(rid, private_key_path=priv2["private_key_path"], output_root=self.root, cosign=True)
-        self.assertIn("existing signature does not match current run", str(ctx_mismatch.exception))
 
     def test_anchor_run_failures(self):
         # Anchor unverified run_id

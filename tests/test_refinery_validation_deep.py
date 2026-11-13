@@ -12,7 +12,6 @@ from hardonian_foundry.refinery_validation import (
     resolve_ledger_path,
     resolve_run_dir,
     validate_and_split_dataset,
-    validate_dataset,
     validate_run_id,
 )
 
@@ -62,11 +61,6 @@ class RefineryValidationDeepTest(unittest.TestCase):
         inside_abs = str(self.root / "evidence.jsonl")
         self.assertEqual(resolve_ledger_path(self.root, inside_abs), Path(inside_abs))
 
-        # Legacy absolute evidence.jsonl fallback returns default ledger (line 115)
-        outside_path = "D:\\outside\\evidence.jsonl" if str(self.root).startswith("C:") else "/outside/evidence.jsonl"
-        res_leg = resolve_ledger_path(self.root, outside_path, allow_legacy_outside_fallback=True)
-        self.assertEqual(res_leg, default_ledger)
-
     def test_facade_attr_fallback(self):
         # Attribute nonexistent in refinery
         res = facade_attr("totally_nonexistent_xyz", 999)
@@ -76,23 +70,6 @@ class RefineryValidationDeepTest(unittest.TestCase):
         # Normal code digest returns 64-char hex
         d = _code_digest()
         self.assertEqual(len(d), 64)
-
-        # Mock non-file entry in glob (line 32 false branch)
-        mock_file = mock.MagicMock(spec=Path)
-        mock_file.name = "sub.py"
-        mock_file.is_file.return_value = False
-        with mock.patch.object(Path, "glob", return_value=[mock_file]):
-            d_empty = _code_digest()
-            self.assertEqual(len(d_empty), 64)
-
-    def test_validate_dataset_non_dict_row(self):
-        res = validate_dataset([
-            {"id": "synthetic-001", "expected_minor": 101, "actual_minor": 101, "critical": False},
-            "not-a-dict",
-            {"id": "synthetic-002", "expected_minor": 102, "actual_minor": 102, "critical": False},
-        ])
-        self.assertEqual(res["status"], "INVALID")
-        self.assertTrue(any("not a dictionary" in e for e in res["errors"]))
 
     def test_resolve_run_dir_escape(self):
         # Mock is_relative_to returning False

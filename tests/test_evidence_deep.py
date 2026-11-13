@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from hardonian_foundry.evidence import (
+    JsonlEvidenceStore,
     SQLiteEvidenceStore,
     _load_valid_checkpoint,
     _normalize_allowed_origins,

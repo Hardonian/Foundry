@@ -153,6 +153,13 @@ class CliDeepTest(unittest.TestCase):
         rc_l, out_l, _ = _run_cli(["refinery", "artifact", "list", "--output-root", str(self.root)])
         self.assertEqual(rc_l, 0)
         self.assertEqual(json.loads(out_l)["count"], 1)
+        self.assertIn("Promotion blocked", err1)
+
+        # Promote unsigned run with --json-errors
+        rc2, _, err2 = _run_cli(["--json-errors", "refinery", "promote", rid, "--output-root", str(self.root)])
+        self.assertEqual(rc2, 2)
+        self.assertIn("Promotion blocked", err2)
+        self.assertIn('"exit_code": 2', err2)
 
 
 if __name__ == "__main__":
