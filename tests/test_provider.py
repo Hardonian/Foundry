@@ -1,23 +1,33 @@
 import json
+import os
+import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
 from hardonian_foundry import provider
-from hardonian_foundry.provider import suggest, validate_loopback_url
+from hardonian_foundry.provider import (
+    CircuitBreaker,
+    predict_batch,
+    suggest,
+    validate_loopback_url,
+)
 
 CASE = {"id": "synthetic-provider", "expected_minor": 100, "actual_minor": 99, "critical": False}
 
 
 class Handler(BaseHTTPRequestHandler):
     mode = "good"
+    last_auth_header: str | None = None
 
     def log_message(self, *_args):
         pass
 
     def do_POST(self):
+        Handler.last_auth_header = self.headers.get("Authorization")
         self.rfile.read(int(self.headers["Content-Length"]))
         if self.mode == "redirect":
             self.send_response(302)
@@ -130,6 +140,97 @@ class ProviderTest(unittest.TestCase):
         result = suggest(CASE, origin=self.origin, model="x", transport=wrong)
         self.assertFalse(result["arithmetic_agrees"])
         self.assertTrue(result["review_required"])
+
+    def test_fast_pool_transport_audit_hash_and_latency(self):
+        Handler.mode = "good"
+        t0 = time.monotonic()
+        for _ in range(10):
+            res = suggest(CASE, origin=self.origin, model="local-model", timeout=1.5)
+            self.assertEqual(res["status"], "REVIEW_REQUIRED")
+            self.assertEqual(len(res["audit_sha256"]), 64)
+            self.assertGreaterEqual(res["latency_ms"], 0.0)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.0)
+
+    def test_structured_unavailable_reasons_and_circuit_breaker(self):
+        breaker = CircuitBreaker(failure_threshold=2, recovery_timeout=5.0)
+        Handler.mode = "error"
+        r1 = suggest(CASE, origin=self.origin, model="x", circuit_breaker=breaker)
+        r2 = suggest(CASE, origin=self.origin, model="x", circuit_breaker=breaker)
+        self.assertEqual(r1["status"], "UNAVAILABLE")
+        self.assertEqual(r1["reason_code"], "HTTP_ERROR")
+        self.assertEqual(r2["reason_code"], "HTTP_ERROR")
+
+        # 3rd call trips open circuit without touching server
+        Handler.mode = "good"
+        r3 = suggest(CASE, origin=self.origin, model="x", circuit_breaker=breaker)
+        self.assertEqual(r3["status"], "UNAVAILABLE")
+        self.assertEqual(r3["reason_code"], "CIRCUIT_OPEN")
+        self.assertTrue(r3["review_required"])
+
+    def test_opt_in_tls_remote_and_env_token(self):
+        with self.assertRaises(ValueError):
+            validate_loopback_url("https://api.example.com:8443")
+        with self.assertRaises(ValueError):
+            validate_loopback_url("https://127.0.0.1:8443")
+        with self.assertRaises(ValueError):
+            validate_loopback_url("https://api.example.com:8443", allow_tls=True)
+        self.assertEqual(
+            validate_loopback_url("https://api.example.com:8443", allow_tls=True, allow_remote=True),
+            "https://api.example.com:8443",
+        )
+
+        # Auth token is read from env, sent over the wire, and never echoed into result payload
+        Handler.mode = "good"
+        Handler.last_auth_header = None
+        with patch.dict(os.environ, {"FOUNDRY_TEST_TOKEN": "super-secret-value-123"}):
+            res = suggest(
+                CASE,
+                origin=self.origin,
+                model="local",
+                auth_token_env="FOUNDRY_TEST_TOKEN",
+            )
+        self.assertEqual(res["status"], "REVIEW_REQUIRED")
+        self.assertEqual(Handler.last_auth_header, "Bearer super-secret-value-123")
+        self.assertNotIn("super-secret-value-123", json.dumps(res))
+
+    def test_predict_batch_jsonl_and_fail_closed_undetermined(self):
+        labels = ["ALPHA", "BETA", "UNDETERMINED"]
+        records = [
+            {"id": "t1", "prompt": "case 1", "gold_label": "ALPHA", "critical": False},
+            {"id": "t2", "prompt": "case 2", "gold_label": "BETA", "critical": True},
+            {"id": "t3", "prompt": "case 3", "gold_label": "ALPHA", "critical": False},
+        ]
+        replies = iter([
+            {"choices": [{"message": {"content": '{"label": "ALPHA", "confidence": 0.9}'}}]},
+            {"choices": [{"message": {"content": '{"label": "INVENTED_LABEL"}'}}]},
+            OSError("connection dropped"),
+        ])
+
+        def batch_transport(*_args, **_kwargs):
+            nxt = next(replies)
+            if isinstance(nxt, BaseException):
+                raise nxt
+            return nxt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "preds.jsonl"
+            summary = predict_batch(
+                records,
+                labels=labels,
+                origin=self.origin,
+                model="local-batch",
+                transport=batch_transport,
+                out_path=out_file,
+            )
+            self.assertEqual(summary["status"], "DEGRADED_FALLBACK")
+            self.assertEqual(summary["total"], 3)
+            self.assertEqual(summary["predicted_count"], 1)
+            self.assertEqual(summary["fallback_count"], 2)
+            self.assertEqual(len(summary["audit_sha256"]), 64)
+            lines = [json.loads(line) for line in out_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual([r["id"] for r in lines], ["t1", "t2", "t3"])
+            self.assertEqual([r["label"] for r in lines], ["ALPHA", "UNDETERMINED", "UNDETERMINED"])
 
 
 if __name__ == "__main__":

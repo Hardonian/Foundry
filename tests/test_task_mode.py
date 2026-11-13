@@ -19,9 +19,12 @@ from hardonian_foundry.refinery import (
     evaluate_promotion,
     inspect_run,
     load_keyring,
+    parse_keyring,
     sign_run,
 )
 from hardonian_foundry.task_eval import (
+    bootstrap_ci,
+    mcnemar_test,
     score_predictions,
     split_task_dataset,
     validate_spec,
@@ -108,6 +111,42 @@ class SpecValidationTests(unittest.TestCase):
         bad = json.loads(json.dumps(GOOD_SPEC))
         bad["dataset_path"] = "../outside.jsonl"
         self.assertIn("dataset_path must be a relative, traversal-free path <= 1024 chars", validate_spec(bad))
+
+    def test_windows_traversal_drive_and_notes_rejected(self):
+        for bad_path in (
+            "..\\outside.jsonl",
+            "C:\\evil\\data.jsonl",
+            "C:data.jsonl",
+            "\\\\server\\share\\data.jsonl",
+            "/etc/passwd",
+        ):
+            bad = json.loads(json.dumps(GOOD_SPEC))
+            bad["dataset_path"] = bad_path
+            errs = validate_spec(bad)
+            self.assertTrue(any("dataset_path" in err for err in errs), msg=f"expected error for {bad_path!r}: {errs}")
+
+        bad_notes = json.loads(json.dumps(GOOD_SPEC))
+        bad_notes["notes"] = "x" * 2049
+        self.assertTrue(any("notes" in err for err in validate_spec(bad_notes)))
+
+    def test_optional_thresholds_validated(self):
+        ok_spec = json.loads(json.dumps(GOOD_SPEC))
+        ok_spec["thresholds"] = {
+            "macro_f1_min": 0.8,
+            "critical_fn_rate_max": 0.0,
+            "per_class_recall_min": {"ALPHA": 0.75},
+            "invalid_output_rate_max": 0.05,
+            "latency_p95_ms_max": 500.0,
+            "ood_challenge_predictions": {"min_count": 2, "min_accuracy": 0.7},
+        }
+        self.assertEqual(validate_spec(ok_spec), [])
+
+        bad_spec = json.loads(json.dumps(ok_spec))
+        bad_spec["thresholds"]["latency_p95_ms_max"] = -1
+        bad_spec["thresholds"]["per_class_recall_min"] = {"NONEXISTENT": 0.5}
+        errs = validate_spec(bad_spec)
+        self.assertTrue(any("latency_p95_ms_max" in e for e in errs))
+        self.assertTrue(any("per_class_recall_min" in e for e in errs))
 
 
 class DatasetValidationTests(unittest.TestCase):
@@ -197,6 +236,65 @@ class ScoringTests(unittest.TestCase):
             score_predictions(rows, [], spec)
         with self.assertRaises(ValueError):
             score_predictions(rows, [{"id": "a", "label": "OMEGA"}], spec)
+
+    def test_non_dict_prediction_row_rejected(self):
+        rows = [{"id": "a", "prompt": "x", "gold_label": "ALPHA", "critical": False}]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        for bad_preds in ([123], ["ALPHA"], [None]):
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                score_predictions(rows, bad_preds, spec)
+
+    def test_confusion_matrix_per_family_calibration_and_latency(self):
+        rows = [
+            {"id": "1", "prompt": "p1", "gold_label": "ALPHA", "critical": True, "family": "fam_a"},
+            {"id": "2", "prompt": "p2", "gold_label": "BETA", "critical": False, "family": "fam_a"},
+            {"id": "3", "prompt": "p3", "gold_label": "GAMMA", "critical": False, "family": "fam_b"},
+            {"id": "4", "prompt": "p4", "gold_label": "ALPHA", "critical": False, "family": "fam_b"},
+        ]
+        preds = [
+            {"id": "1", "label": "ALPHA", "confidence": 0.9, "latency_ms": 10.0},
+            {"id": "2", "label": "BETA", "confidence": 0.8, "latency_ms": 20.0},
+            {"id": "3", "label": "ALPHA", "confidence": 0.6, "latency_ms": 100.0, "abstained": True},
+            {"id": "4", "label": "ALPHA", "confidence": 0.95, "latency_ms": 30.0, "raw_invalid": True},
+        ]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        metrics = score_predictions(rows, preds, spec)
+        self.assertEqual(metrics["confusion_matrix"]["GAMMA"]["ALPHA"], 1)
+        self.assertEqual(metrics["per_family"]["fam_a"]["accuracy"], 1.0)
+        self.assertEqual(metrics["per_family"]["fam_b"]["accuracy"], 0.5)
+        self.assertIn("calibration", metrics)
+        self.assertAlmostEqual(metrics["abstention_rate"], 0.25)
+        self.assertAlmostEqual(metrics["selective_accuracy"], 1.0)
+        self.assertEqual(metrics["latency_p95_ms"], 100.0)
+        self.assertAlmostEqual(metrics["invalid_output_rate"], 0.25)
+
+        # Mixing confidence presence/absence fails closed
+        partial = [{**preds[0]}, {k: v for k, v in preds[1].items() if k != "confidence"}, preds[2], preds[3]]
+        with self.assertRaisesRegex(ValueError, "confidence"):
+            score_predictions(rows, partial, spec)
+
+    def test_bootstrap_ci_and_mcnemar_test(self):
+        rows = [
+            {"id": f"r{i}", "prompt": f"p{i}", "gold_label": LABELS[i % 3], "critical": i % 3 == 0}
+            for i in range(12)
+        ]
+        base_preds = [{"id": f"r{i}", "label": LABELS[(i + (1 if i < 6 else 0)) % 3]} for i in range(12)]
+        model_preds = [{"id": f"r{i}", "label": LABELS[i % 3]} for i in range(12)]
+        spec = json.loads(json.dumps(GOOD_SPEC))
+        ci = bootstrap_ci(rows, model_preds, spec, n_bootstrap=50, seeds=(7, 13))
+        ci2 = bootstrap_ci(rows, model_preds, spec, n_bootstrap=50, seeds=(7, 13))
+        self.assertEqual(ci, ci2)
+        self.assertEqual(ci["seeds"], [7, 13])
+        self.assertEqual(ci["accuracy"]["ci_low"], 1.0)
+        self.assertEqual(ci["accuracy"]["ci_high"], 1.0)
+        self.assertGreaterEqual(ci["macro_f1"]["ci_low"], 0.0)
+        self.assertLessEqual(ci["macro_f1"]["ci_low"], ci["macro_f1"]["ci_high"])
+        self.assertLessEqual(ci["macro_f1"]["ci_high"], 1.0)
+
+        mc = mcnemar_test(rows, base_preds, model_preds)
+        self.assertEqual(mc["baseline_only_correct"], 0)
+        self.assertEqual(mc["model_only_correct"], 6)
+        self.assertLess(mc["p_value"], 0.05)
 
 
 @unittest.skipUnless(signing.backend_available(), "signing extra unavailable")
@@ -685,6 +783,116 @@ class TaskPromotionTests(unittest.TestCase):
         run_id = run["run_id"]
         attach = attach_license(run_id, manifest=ALLOWED_MANIFEST, output_root=self.runs)
         self.assertEqual(attach["manifest_sha256"], digest(ALLOWED_MANIFEST))
+
+    def test_presign_run_json_tamper_rejected(self):
+        run = self._create_run()
+        rid = run["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        key_path = str(self.root / "presign.pem")
+        signing.generate_keypair(key_path)
+
+        run_json = Path(self.runs) / rid / "run.json"
+        tampered = json.loads(run_json.read_text(encoding="utf-8"))
+        tampered["evaluation"]["task"]["thresholds"]["macro_f1_min"] = 0.01
+        run_json.write_text(json.dumps(tampered), encoding="utf-8")
+
+        ledger_before = (Path(self.runs) / "evidence.jsonl").read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "integrity verification"):
+            sign_run(rid, private_key_path=key_path, output_root=self.runs)
+        self.assertEqual((Path(self.runs) / "evidence.jsonl").read_text(encoding="utf-8"), ledger_before)
+
+    def test_m_of_n_quorum_roles_and_revocation(self):
+        run = self._create_run()
+        rid = run["run_id"]
+        attach_license(rid, manifest=ALLOWED_MANIFEST, output_root=self.runs)
+        k1_path = str(self.root / "maintainer.pem")
+        k2_path = str(self.root / "security.pem")
+        k3_path = str(self.root / "observer.pem")
+        k1 = signing.generate_keypair(k1_path)["public_key_hex"]
+        k2 = signing.generate_keypair(k2_path)["public_key_hex"]
+        k3 = signing.generate_keypair(k3_path)["public_key_hex"]
+
+        policy = {
+            "trusted_keys": [
+                {"public_key_hex": k1, "key_id": "k1", "role": "maintainer"},
+                {"public_key_hex": k2, "key_id": "k2", "role": "security"},
+                {"public_key_hex": k3, "key_id": "k3", "role": "observer"},
+            ],
+            "required_signatures": 2,
+            "required_roles": ["maintainer", "security"],
+        }
+
+        sign_run(rid, private_key_path=k1_path, output_root=self.runs)
+        partial = evaluate_promotion(rid, output_root=self.runs, keyring=policy)
+        self.assertFalse(partial["promoted"])
+        self.assertIn("signature_quorum", partial["missing_evidence"])
+        self.assertIn("required_signer_roles", partial["missing_evidence"])
+
+        # Co-signing with observer satisfies count=2 but still misses security role
+        sign_run(rid, private_key_path=k3_path, output_root=self.runs, cosign=True)
+        wrong_role = evaluate_promotion(rid, output_root=self.runs, keyring=policy)
+        self.assertFalse(wrong_role["promoted"])
+        self.assertIn("required_signer_roles", wrong_role["missing_evidence"])
+
+        # Co-signing with security satisfies quorum + roles
+        sign_run(rid, private_key_path=k2_path, output_root=self.runs, cosign=True)
+        allowed = evaluate_promotion(rid, output_root=self.runs, keyring=policy)
+        self.assertTrue(allowed["promoted"])
+        self.assertEqual(allowed["evidence_summary"]["quorum"]["verified"], 3)
+
+        # Revoking security key drops required role and blocks promotion
+        revoked_policy = json.loads(json.dumps(policy))
+        revoked_policy["trusted_keys"][1]["revoked_at"] = "2026-11-12T00:00:00Z"
+        blocked = evaluate_promotion(rid, output_root=self.runs, keyring=revoked_policy)
+        self.assertFalse(blocked["promoted"])
+        self.assertIn("required_signer_roles", blocked["missing_evidence"])
+
+    def test_optional_thresholds_and_ood_challenge_gate(self):
+        spec = json.loads(json.dumps(self.spec))
+        spec["thresholds"] = {
+            "macro_f1_min": 0.8,
+            "critical_fn_rate_max": 0.0,
+            "per_class_recall_min": 0.8,
+            "invalid_output_rate_max": 0.05,
+            "latency_p95_ms_max": 100.0,
+            "ood_challenge_predictions": {"min_count": 2, "min_accuracy": 0.75},
+        }
+        splits = split_task_dataset(self.records, spec)
+        base = predictions_for(splits["test"], "constant")
+        model = predictions_for(splits["test"], "gold")
+        model_with_extras = [
+            {**p, "latency_ms": 40.0, "confidence": 0.95}
+            for p in model
+        ]
+        # OOD predictions scoring only 50% (1/2) fails the 0.75 OOD threshold
+        ood_bad = [
+            {"id": "ood-1", "gold_label": "ALPHA", "label": "ALPHA"},
+            {"id": "ood-2", "gold_label": "BETA", "label": "ALPHA"},
+        ]
+        run = create_task_run(
+            task_spec=spec,
+            dataset_records=self.records,
+            baseline_predictions=base,
+            model_predictions=model_with_extras,
+            output_root=self.runs,
+            model_manifest=ALLOWED_MANIFEST,
+            ood_challenge_predictions=ood_bad,
+        )
+        key_path = str(self.root / "ood.pem")
+        pub = signing.generate_keypair(key_path)["public_key_hex"]
+        sign_run(run["run_id"], private_key_path=key_path, output_root=self.runs)
+        res = evaluate_promotion(run["run_id"], output_root=self.runs, keyring=[pub])
+        self.assertFalse(res["promoted"])
+        self.assertIn("ood_challenge_predictions", res["missing_evidence"])
+
+    def test_keyring_unknown_field_typo_rejected(self):
+        fake_pub = "a" * 64
+        with self.assertRaisesRegex(ValueError, "unknown keyring entry fields"):
+            parse_keyring({"trusted_keys": [{"public_key_hex": fake_pub, "revoke_at": "2026-01-01"}]})
+        with self.assertRaisesRegex(ValueError, "unknown keyring entry fields"):
+            parse_keyring({"trusted_keys": [{"public_key_hex": fake_pub, "revoked": True}]})
+        with self.assertRaisesRegex(ValueError, "unknown keyring fields"):
+            parse_keyring({"trusted_keys": [fake_pub], "require_signatures": 2})
 
 
 if __name__ == "__main__":

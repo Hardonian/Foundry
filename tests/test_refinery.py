@@ -3,16 +3,29 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+from hardonian_foundry.artifact import add_artifact, list_artifacts, verify_artifact
 from hardonian_foundry.baseline import dataset as default_dataset
 from hardonian_foundry.refinery import (
+    _code_digest,
+    anchor_run,
+    attach_license,
     create_run,
+    diff_runs,
     evaluate_dataset,
     evaluate_promotion,
+    export_bundle,
     inspect_run,
+    list_runs,
     run_preflight,
+    sign_run,
     validate_dataset,
+    validate_run_id,
+    verify_bundle,
 )
+from hardonian_foundry.tenancy import TenantContext
 
 
 class RefineryTest(unittest.TestCase):
@@ -298,6 +311,191 @@ class RefineryTest(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 2)
         self.assertIn("Promotion blocked", res.stderr)
+
+    def test_run_id_path_traversal_rejected(self):
+        bad_ids = [
+            "",
+            "../other",
+            "..\\other",
+            "a/b",
+            "a\\b",
+            "C:run-1",
+            "run-1.",
+            "..",
+        ]
+        for bad in bad_ids:
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    validate_run_id(bad)
+                with self.assertRaises(ValueError):
+                    inspect_run(bad, output_root=self.output_root)
+                with self.assertRaises(ValueError):
+                    evaluate_promotion(bad, output_root=self.output_root)
+                with self.assertRaises(ValueError):
+                    attach_license(bad, manifest={}, output_root=self.output_root)
+                with self.assertRaises(ValueError):
+                    sign_run(bad, private_key_path="missing.pem", output_root=self.output_root)
+
+    def test_portable_ledger_path_and_outside_escape_rejected(self):
+        manifest = {
+            "name": "synthetic-reconciler",
+            "license_id": "Apache-2.0",
+            "provenance": "synthetic",
+            "data_origin": "synthetic",
+        }
+        run = create_run(output_root=self.output_root, model_manifest=manifest)
+        self.assertEqual(run["provenance"]["evidence_ledger_path"], "evidence.jsonl")
+        run_id = run["run_id"]
+        run_json = Path(self.output_root) / run_id / "run.json"
+
+        for escaped in ("../evidence.jsonl", "..\\evidence.jsonl", "/tmp/other-ledger.jsonl"):
+            data = json.loads(run_json.read_text(encoding="utf-8"))
+            data["provenance"]["evidence_ledger_path"] = escaped
+            run_json.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                inspect_run(run_id, output_root=self.output_root)
+
+        # Even tampering non-hash provenance field invalidates seq-1 run_record_sha256
+        data = json.loads(run_json.read_text(encoding="utf-8"))
+        data["provenance"]["evidence_ledger_path"] = "evidence.jsonl"
+        data["split_seed"] = 999
+        run_json.write_text(json.dumps(data), encoding="utf-8")
+        insp = inspect_run(run_id, output_root=self.output_root)
+        self.assertEqual(insp["provenance_status"], "TAMPERED_METADATA_MISMATCH")
+
+    def test_concurrent_create_run_unique_ids(self):
+        data = default_dataset()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            runs = list(pool.map(lambda _: create_run(output_root=self.output_root, dataset=data), range(6)))
+        run_ids = [r["run_id"] for r in runs]
+        self.assertEqual(len(set(run_ids)), 6)
+        for rid in run_ids:
+            insp_r = inspect_run(rid, output_root=self.output_root)
+            self.assertEqual(insp_r["provenance_status"], "PROVENANCE_VERIFIED")
+
+    def test_evaluate_promotion_consistent_early_return_schema(self):
+        missing = evaluate_promotion("nonexistent-run", output_root=self.output_root)
+        expected_keys = {
+            "promoted",
+            "status",
+            "run_id",
+            "reasons",
+            "missing_evidence",
+            "evidence_summary",
+            "review_required",
+            "note",
+        }
+        self.assertEqual(set(missing.keys()), expected_keys)
+        self.assertFalse(missing["promoted"])
+        self.assertTrue(missing["review_required"])
+        self.assertTrue(missing["note"])
+
+        run = create_run(output_root=self.output_root)
+        ledger = Path(self.output_root) / "evidence.jsonl"
+        entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        entry["record"]["f1"] = 0.0
+        ledger.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        tampered = evaluate_promotion(run["run_id"], output_root=self.output_root)
+        self.assertEqual(set(tampered.keys()), expected_keys)
+        self.assertTrue(tampered["review_required"])
+
+    def test_code_digest_covers_package_modules(self):
+        digest_a = _code_digest()
+        digest_b = _code_digest()
+        self.assertEqual(digest_a, digest_b)
+        self.assertEqual(len(digest_a), 64)
+
+    def test_anchor_run_detects_truncation_and_rollback(self):
+        run1 = create_run(output_root=self.output_root)
+        anchor1 = anchor_run(run1["run_id"], output_root=self.output_root)
+        run2 = create_run(output_root=self.output_root)
+        anchor_file = Path(self.output_root) / "anchor.json"
+        anchor2 = anchor_run(run2["run_id"], output_root=self.output_root, anchor_path=anchor_file)
+        self.assertEqual(anchor2["count"], 2)
+        self.assertTrue(anchor_file.is_file())
+
+        insp_bad = inspect_run(
+            run2["run_id"],
+            output_root=self.output_root,
+            expected_head=anchor1["head"],
+            expected_count=anchor2["count"],
+        )
+        self.assertEqual(insp_bad["provenance_status"], "TAMPERED_ANCHOR_MISMATCH")
+
+        promo_bad = evaluate_promotion(
+            run2["run_id"],
+            output_root=self.output_root,
+            expected_head=anchor1["head"],
+            expected_count=anchor1["count"],
+        )
+        self.assertFalse(promo_bad["promoted"])
+        self.assertIn("anchor_checkpoint", promo_bad["missing_evidence"])
+
+    def test_list_and_diff_runs(self):
+        r1 = create_run(output_root=self.output_root, seed=11)
+        r2 = create_run(output_root=self.output_root, seed=22)
+        listed = list_runs(output_root=self.output_root, verify_provenance=True)
+        self.assertEqual({r["run_id"] for r in listed}, {r1["run_id"], r2["run_id"]})
+        self.assertTrue(all(r["provenance_status"] == "PROVENANCE_VERIFIED" for r in listed))
+        diff = diff_runs(r1["run_id"], r2["run_id"], output_root=self.output_root)
+        self.assertTrue(diff["same_dataset"])
+        self.assertFalse(diff["same_test_split"])
+        self.assertEqual(diff["provenance_a"], "PROVENANCE_VERIFIED")
+        self.assertEqual(diff["provenance_b"], "PROVENANCE_VERIFIED")
+
+    def test_export_and_verify_bundle_formats(self):
+        run = create_run(output_root=self.output_root)
+        rid = run["run_id"]
+        art_src = Path(self.output_root) / "weights.bin"
+        art_src.write_bytes(b"synthetic-adapter-weights-v1")
+        add_artifact(art_src, output_root=self.output_root, name="weights.bin", run_id=rid)
+
+        for fmt, suffix in (("dir", "bundle-dir"), ("zip", "bundle.zip"), ("tar.gz", "bundle.tar.gz")):
+            dest = Path(self.output_root) / suffix
+            exported = export_bundle(rid, output_root=self.output_root, dest_path=dest, fmt=fmt)
+            self.assertEqual(exported["status"], "EXPORTED")
+            verified = verify_bundle(dest)
+            self.assertEqual(verified["status"], "VERIFIED")
+            self.assertEqual(verified["run_id"], rid)
+
+        # Corrupting exported bundle dir fails verification closed
+        corrupt_run = Path(self.output_root) / "bundle-dir" / "run.json"
+        corrupt_run.write_text(corrupt_run.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            verify_bundle(Path(self.output_root) / "bundle-dir")
+
+    def test_artifact_store_add_verify_and_tamper_detection(self):
+        src = Path(self.output_root) / "model.safetensors"
+        src.write_bytes(b"mock-safetensors-payload")
+        entry = add_artifact(src, output_root=self.output_root, name="model.safetensors", kind="adapter")
+        ok_by_hash = verify_artifact(entry["sha256"], output_root=self.output_root)
+        self.assertTrue(ok_by_hash["verified"])
+        ok_by_file = verify_artifact(src, expected_sha256=entry["sha256"], output_root=self.output_root)
+        self.assertTrue(ok_by_file["verified"])
+        self.assertEqual(len(list_artifacts(output_root=self.output_root)), 1)
+
+        # Corrupt stored blob
+        blob = Path(entry["blob_path"])
+        blob.write_bytes(b"corrupted-payload")
+        bad = verify_artifact(entry["sha256"], output_root=self.output_root)
+        self.assertFalse(bad["verified"])
+
+    def test_tenant_context_isolation(self):
+        ctx_a = TenantContext(tenant_id="tenant-a", request_id="req-a-1")
+        ctx_a2 = TenantContext(tenant_id="tenant-a", request_id="req-a-2")
+        ctx_b = TenantContext(tenant_id="tenant-b", request_id="req-b-1")
+        run_a = create_run(output_root=self.output_root, tenant_context=ctx_a)
+        rid = run_a["run_id"]
+
+        insp_a = inspect_run(rid, output_root=self.output_root, tenant_context=ctx_a2)
+        self.assertEqual(insp_a["provenance_status"], "PROVENANCE_VERIFIED")
+        self.assertEqual(len(list_runs(output_root=self.output_root, tenant_context=ctx_a2)), 1)
+        self.assertEqual(len(list_runs(output_root=self.output_root, tenant_context=ctx_b)), 0)
+        with self.assertRaises(PermissionError):
+            inspect_run(rid, output_root=self.output_root, tenant_context=ctx_b)
+        promo_b = evaluate_promotion(rid, output_root=self.output_root, tenant_context=ctx_b)
+        self.assertFalse(promo_b["promoted"])
+        self.assertIn("tenant_authorization", promo_b["missing_evidence"])
 
 
 if __name__ == "__main__":
