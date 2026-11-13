@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
 
 from hardonian_foundry.training_utils import (
     DeviceSpec,

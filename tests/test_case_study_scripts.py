@@ -12,7 +12,9 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"

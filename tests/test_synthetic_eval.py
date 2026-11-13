@@ -8,7 +8,9 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"

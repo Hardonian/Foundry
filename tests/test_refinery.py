@@ -474,8 +474,10 @@ class RefineryTest(unittest.TestCase):
         self.assertTrue(ok_by_file["verified"])
         self.assertEqual(len(list_artifacts(output_root=self.output_root)), 1)
 
-        # Corrupt stored blob
+        # Corrupt stored blob. It is sealed read-only (0o444); chmod writable
+        # first so the tamper simulation works for non-root (CI runs as root).
         blob = Path(entry["blob_path"])
+        blob.chmod(0o644)
         blob.write_bytes(b"corrupted-payload")
         bad = verify_artifact(entry["sha256"], output_root=self.output_root)
         self.assertFalse(bad["verified"])

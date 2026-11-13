@@ -96,7 +96,10 @@ class ArtifactStoreTest(unittest.TestCase):
         entry2 = add_artifact(src, store_dir=self.store, name="weights.bin")
         self.assertEqual(entry2["sha256"], expected_sha)
 
-        # Corrupt existing blob triggers error on add
+        # Corrupt existing blob triggers error on add. The blob is sealed
+        # read-only (0o444); make it writable to simulate an attacker with
+        # write access (a non-root owner cannot write a 0o444 file).
+        blob_path.chmod(0o644)
         blob_path.write_bytes(b"tampered-blob")
         with self.assertRaises(ValueError):
             add_artifact(src, store_dir=self.store)
