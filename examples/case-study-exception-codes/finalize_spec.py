@@ -12,7 +12,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 try:
     from hardonian_foundry.training_utils import sha_file
@@ -24,7 +24,7 @@ except ImportError:
 _HEX64 = frozenset("0123456789abcdef")
 
 
-def _is_hex64(value: Any) -> bool:
+def _is_hex64(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and len(value) == 64 and all(ch in _HEX64 for ch in value)
 
 

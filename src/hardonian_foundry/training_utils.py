@@ -609,15 +609,16 @@ def acquire_training_lock(lock_path: str | Path) -> Iterator[TextIO]:
     fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as lock_file:
         if fcntl is not None:
+            fcntl_mod: Any = fcntl
             try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl_mod.flock(lock_file, fcntl_mod.LOCK_EX | fcntl_mod.LOCK_NB)
             except BlockingIOError as exc:
                 raise TrainingLockError("another participating Foundry training job holds the lock") from exc
             try:
                 yield lock_file
             finally:
                 try:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                    fcntl_mod.flock(lock_file, fcntl_mod.LOCK_UN)
                 except OSError:
                     pass
         elif msvcrt is not None:
@@ -775,6 +776,14 @@ def resolve_model_spec(
     return spec
 
 
+def _resolve_torch(torch_module: Any | None) -> Any:
+    if torch_module is not None:
+        return torch_module
+    import torch
+
+    return torch
+
+
 def select_device(requested: str = "cpu", torch_module: Any | None = None) -> DeviceSpec:
     """Select execution device with strict offline-CPU default and fail-closed explicit backends."""
     if requested not in SUPPORTED_DEVICES:
@@ -788,11 +797,10 @@ def select_device(requested: str = "cpu", torch_module: Any | None = None) -> De
             note="offline CPU default",
         )
 
-    if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+    torch_mod = _resolve_torch(torch_module)
 
-    cuda_avail = bool(getattr(torch_module, "cuda", None) and torch_module.cuda.is_available())
-    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    cuda_avail = bool(getattr(torch_mod, "cuda", None) and torch_mod.cuda.is_available())
+    mps_backend = getattr(getattr(torch_mod, "backends", None), "mps", None)
     mps_avail = bool(mps_backend is not None and mps_backend.is_available())
     try:
         import torch_directml  # type: ignore[import-not-found]
@@ -802,7 +810,7 @@ def select_device(requested: str = "cpu", torch_module: Any | None = None) -> De
         dml_avail = False
 
     def _cuda_dtype() -> str:
-        is_bf16 = getattr(torch_module.cuda, "is_bf16_supported", None)
+        is_bf16 = getattr(torch_mod.cuda, "is_bf16_supported", None)
         return "bfloat16" if (callable(is_bf16) and is_bf16()) else "float16"
 
     if requested == "cuda":
@@ -931,12 +939,11 @@ def compute_dpo_loss(
     """Compute Direct Preference Optimization (DPO) loss and chosen/rejected implicit rewards."""
     if beta <= 0:
         raise ValueError("DPO beta must be positive")
-    if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+    torch_mod = _resolve_torch(torch_module)
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = ref_chosen_logps - ref_rejected_logps
     logits = beta * (pi_logratios - ref_logratios)
-    loss = -torch_module.nn.functional.logsigmoid(logits).mean()
+    loss = -torch_mod.nn.functional.logsigmoid(logits).mean()
     chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps).detach()
     rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps).detach()
     return loss, chosen_rewards, rejected_rewards
@@ -1000,8 +1007,7 @@ class RLVRAdapterHook(SFTAdapterHook):
         *,
         torch_module: Any | None = None,
     ) -> Any:
-        if torch_module is None:
-            import torch as torch_module  # type: ignore[no-redef]
+        _ = torch_module
         baseline = rewards.mean() if rewards.numel() > 1 else 0.0
         advantages = rewards - baseline
         pg_loss = -(advantages.detach() * logps).mean()
@@ -1069,8 +1075,7 @@ def collate_causal_lm_batch(
     """Right-pad variable-length causal LM examples (`input_ids`, `labels`, `attention_mask`)."""
     if not examples:
         raise ValueError("cannot collate empty batch")
-    if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+    torch_mod = _resolve_torch(torch_module)
 
     parsed_ids: list[list[int]] = []
     parsed_labels: list[list[int]] = []
@@ -1096,13 +1101,13 @@ def collate_causal_lm_batch(
         padded_labels.append(lbls + [-100] * pad_len)
         attention_masks.append([1] * len(ids) + [0] * pad_len)
 
-    kwargs: dict[str, Any] = {"dtype": torch_module.long}
+    kwargs: dict[str, Any] = {"dtype": torch_mod.long}
     if device is not None:
         kwargs["device"] = device
     return {
-        "input_ids": torch_module.tensor(padded_ids, **kwargs),
-        "labels": torch_module.tensor(padded_labels, **kwargs),
-        "attention_mask": torch_module.tensor(attention_masks, **kwargs),
+        "input_ids": torch_mod.tensor(padded_ids, **kwargs),
+        "labels": torch_mod.tensor(padded_labels, **kwargs),
+        "attention_mask": torch_mod.tensor(attention_masks, **kwargs),
     }
 
 
@@ -1116,8 +1121,7 @@ def collate_left_padded_prompts(
     """Left-pad prompt token sequences for causal LM batched greedy generation."""
     if not prompts:
         raise ValueError("cannot collate empty prompt batch")
-    if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+    torch_mod = _resolve_torch(torch_module)
 
     max_len = max(len(p) for p in prompts)
     padded: list[list[int]] = []
@@ -1128,12 +1132,12 @@ def collate_left_padded_prompts(
         padded.append([pad_token_id] * pad_len + seq)
         masks.append([0] * pad_len + [1] * len(seq))
 
-    kwargs: dict[str, Any] = {"dtype": torch_module.long}
+    kwargs: dict[str, Any] = {"dtype": torch_mod.long}
     if device is not None:
         kwargs["device"] = device
     return (
-        torch_module.tensor(padded, **kwargs),
-        torch_module.tensor(masks, **kwargs),
+        torch_mod.tensor(padded, **kwargs),
+        torch_mod.tensor(masks, **kwargs),
     )
 
 
@@ -1275,8 +1279,7 @@ def batched_greedy_generate(
         raise ValueError("batch_size must be positive")
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be positive")
-    if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+    torch_mod = _resolve_torch(torch_module)
 
     resolved_eos = eos_token_id if eos_token_id is not None else getattr(tokenizer, "eos_token_id", None)
     resolved_pad = pad_token_id
@@ -1296,13 +1299,13 @@ def batched_greedy_generate(
     if hasattr(model, "eval"):
         model.eval()
     results: list[GenerationResult] = []
-    with torch_module.inference_mode():
+    with torch_mod.inference_mode():
         for batch_prompts in iter_micro_batches(list(prompts), batch_size):
             t_start = time.perf_counter()
             input_ids, attention_mask = collate_left_padded_prompts(
                 batch_prompts,
                 pad_token_id=int(resolved_pad),
-                torch_module=torch_module,
+                torch_module=torch_mod,
                 device=device,
             )
             prompt_len = int(input_ids.shape[1])
@@ -1349,7 +1352,7 @@ def batched_greedy_generate(
                     active_tokens = gen_slice
                     limit_hit = len(gen_slice) >= max_new_tokens
                 decoded = str(tokenizer.decode(active_tokens, skip_special_tokens=True)).strip()
-                conf = _extract_sequence_confidence(scores, row_idx, active_tokens, torch_module)
+                conf = _extract_sequence_confidence(scores, row_idx, active_tokens, torch_mod)
                 results.append(
                     GenerationResult(
                         text=decoded,

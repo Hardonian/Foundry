@@ -48,8 +48,15 @@ class ChallengeTest(unittest.TestCase):
                 for x in rows
             )
         )
-        # Distractor prose cases exist
+        # Distractor prose cases exist and currencies are strict 3-letter codes or None
         self.assertTrue(any("Ignore" in x["prompt"] or "Prior" in x["prompt"] for x in rows))
+        self.assertTrue(
+            all(
+                (x["expected_currency"] is None or len(x["expected_currency"]) == 3)
+                and (x["actual_currency"] is None or len(x["actual_currency"]) == 3)
+                for x in rows
+            )
+        )
 
     def test_scoring_does_not_treat_invalid_as_safe(self):
         rows = [

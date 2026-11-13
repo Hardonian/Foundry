@@ -27,6 +27,9 @@ try:
         DEFAULT_REVISION,
         SUPPORTED_DEVICES,
         SUPPORTED_METHODS,
+        DPOAdapterHook,
+        QLoRAAdapterHook,
+        RLVRAdapterHook,
         TrainingLockError,
         acquire_training_lock,
         batched_greedy_generate,
@@ -56,6 +59,9 @@ except ImportError:
         DEFAULT_REVISION,
         SUPPORTED_DEVICES,
         SUPPORTED_METHODS,
+        DPOAdapterHook,
+        QLoRAAdapterHook,
+        RLVRAdapterHook,
         TrainingLockError,
         acquire_training_lock,
         batched_greedy_generate,
@@ -145,6 +151,58 @@ def encode_classification_example(
     return {"input_ids": full_ids, "labels": labels_ids}
 
 
+def encode_preference_pair(
+    tokenizer: Any,
+    row: dict[str, Any],
+    label_menu: str,
+    max_seq: int,
+    *,
+    prompt_sys: str = PROMPT_SYS,
+) -> dict[str, list[int]]:
+    """Tokenize a DPO `(prompt, chosen, rejected)` pair; fail closed if `max_seq` would truncate."""
+    if max_seq <= 0:
+        raise ValueError("max_seq must be positive")
+    messages = [
+        {"role": "system", "content": prompt_sys},
+        {"role": "user", "content": f"Codes: {label_menu}\nNote: {row['prompt']}\nCode:"},
+    ]
+    prompt_ids = _normalize_token_list(
+        tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+    )
+    encoded: dict[str, list[int]] = {}
+    for key in ("chosen", "rejected"):
+        full_ids = _normalize_token_list(
+            tokenizer.apply_chat_template(
+                messages + [{"role": "assistant", "content": row[key]}],
+                tokenize=True,
+                add_generation_prompt=False,
+            )
+        )
+        if full_ids[: len(prompt_ids)] != prompt_ids:
+            raise ValueError(f"preference pair {key} chat template prefix mismatch")
+        if len(full_ids) <= len(prompt_ids):
+            raise ValueError(f"preference pair {key} produced zero assistant tokens")
+        if len(full_ids) > max_seq:
+            raise ValueError(
+                f"preference pair {key} length {len(full_ids)} exceeds max_seq={max_seq}; "
+                "refusing silent truncation (increase --max-seq)"
+            )
+        encoded[f"{key}_input_ids"] = full_ids
+        encoded[f"{key}_labels"] = [-100] * len(prompt_ids) + full_ids[len(prompt_ids) :]
+    return encoded
+
+
+def _sequence_completion_logps(model: Any, batch: dict[str, Any], torch_mod: Any) -> Any:
+    """Sum token log-probabilities over assistant completion tokens (`labels != -100`)."""
+    outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+    logits = outputs.logits[:, :-1, :]
+    targets = batch["input_ids"][:, 1:]
+    mask = batch["labels"][:, 1:] != -100
+    log_probs = torch_mod.nn.functional.log_softmax(logits.float(), dim=-1)
+    token_logps = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    return (token_logps * mask.to(token_logps.dtype)).sum(dim=-1)
+
+
 def build_lr_scheduler(
     optimizer: Any,
     total_steps: int,
@@ -155,7 +213,11 @@ def build_lr_scheduler(
 ) -> Any:
     """Create cosine, linear, or constant LR schedule with linear warmup."""
     if torch_module is None:
-        import torch as torch_module  # type: ignore[no-redef]
+        import torch
+
+        torch_mod: Any = torch
+    else:
+        torch_mod = torch_module
     if total_steps <= 0:
         raise ValueError("total_steps must be positive")
     if not (0.0 <= warmup_ratio <= 0.5):
@@ -176,7 +238,7 @@ def build_lr_scheduler(
             return max(0.0, 1.0 - progress)
         return 0.5 * (1.0 + math.cos(math.pi * progress))
 
-    return torch_module.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    return torch_mod.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -294,17 +356,18 @@ def _run_training(
     try:
         device_spec = select_device(args.device, torch)
         hook = get_training_hook(args.method)
-        if args.method == "qlora":
-            hook.ensure_supported(device_spec)  # type: ignore[union-attr]
-            quant_cfg = hook.build_quantization_config(torch)  # type: ignore[union-attr]
+        if isinstance(hook, QLoRAAdapterHook):
+            hook.ensure_supported(device_spec)
+            quant_cfg = hook.build_quantization_config(torch)
         else:
             quant_cfg = None
 
-        if args.method == "dpo":
+        pref_rows: list[dict[str, Any]] = []
+        if isinstance(hook, DPOAdapterHook):
             if args.preference_data is None:
                 raise ValueError("training method 'dpo' requires --preference-data JSONL with prompt/chosen/rejected")
             pref_rows = _load_jsonl(args.preference_data)
-            hook.validate_preferences(pref_rows)  # type: ignore[union-attr]
+            hook.validate_preferences(pref_rows)
     except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -333,16 +396,46 @@ def _run_training(
         pad_id = 0
 
     try:
-        encoded_train = [encode_classification_example(tokenizer, row, label_menu, args.max_seq) for row in train_rows]
         encoded_val = (
             [encode_classification_example(tokenizer, row, label_menu, args.max_seq) for row in val_rows]
             if args.eval_val and val_rows
             else []
         )
+        encoded_train: list[dict[str, Any]] = []
+        encoded_prefs: list[dict[str, Any]] = []
+        if args.method == "dpo":
+            encoded_prefs = [
+                encode_preference_pair(tokenizer, row, label_menu, args.max_seq) for row in pref_rows
+            ]
+        else:
+            encoded_train = [
+                encode_classification_example(tokenizer, row, label_menu, args.max_seq) for row in train_rows
+            ]
     except ValueError as exc:
         raise SystemExit(f"dataset tokenization failed closed: {exc}") from exc
 
+    if args.method == "dpo":
+        model.eval()
+        with torch.inference_mode():
+            for pref_item in encoded_prefs:
+                c_batch = collate_causal_lm_batch(
+                    [{"input_ids": pref_item["chosen_input_ids"], "labels": pref_item["chosen_labels"]}],
+                    pad_token_id=int(pad_id),
+                    torch_module=torch,
+                    device=device_spec.device,
+                )
+                r_batch = collate_causal_lm_batch(
+                    [{"input_ids": pref_item["rejected_input_ids"], "labels": pref_item["rejected_labels"]}],
+                    pad_token_id=int(pad_id),
+                    torch_module=torch,
+                    device=device_spec.device,
+                )
+                pref_item["ref_chosen_logp"] = float(_sequence_completion_logps(model, c_batch, torch)[0].item())
+                pref_item["ref_rejected_logp"] = float(_sequence_completion_logps(model, r_batch, torch)[0].item())
+
+    train_pool: list[dict[str, Any]] = encoded_prefs if args.method == "dpo" else encoded_train
     dataset_sha = sha_file(task_dir / "data.jsonl")
+    pref_sha = sha_file(args.preference_data) if args.method == "dpo" and args.preference_data is not None else None
     spec_sha = sha_file(task_dir / "spec.json")
     spec_core_sha = compute_spec_core_sha256(spec)
     base_weights_sha = snap_info["weights_sha256"]
@@ -366,6 +459,8 @@ def _run_training(
             ckpt_state.get("dataset_sha256") != dataset_sha
             or ckpt_state.get("spec_core_sha256") != spec_core_sha
             or ckpt_state.get("base_weights_sha256") != base_weights_sha
+            or ckpt_state.get("method") != args.method
+            or ckpt_state.get("preference_data_sha256") != pref_sha
         ):
             raise SystemExit("resume checkpoint provenance mismatch; refusing to resume")
         model = PeftModel.from_pretrained(model, str(ckpt_adapter), is_trainable=True, local_files_only=True)
@@ -396,7 +491,7 @@ def _run_training(
     trainable_count = sum(p.numel() for p in trainable_params)
     print(f"trainable params: {trainable_count}", flush=True)
 
-    micro_batches_per_epoch = math.ceil(len(encoded_train) / args.batch_size)
+    micro_batches_per_epoch = math.ceil(len(train_pool) / args.batch_size)
     steps_per_epoch = math.ceil(micro_batches_per_epoch / args.grad_accum)
     total_opt_steps = max(1, args.epochs * steps_per_epoch)
 
@@ -437,10 +532,10 @@ def _run_training(
         return sum(val_losses) / len(val_losses)
 
     for epoch in range(args.epochs):
-        order = torch.randperm(len(encoded_train), generator=gen).tolist()
+        order = torch.randperm(len(train_pool), generator=gen).tolist()
         if epoch < start_epoch:
             continue
-        ordered_items = [encoded_train[i] for i in order]
+        ordered_items = [train_pool[i] for i in order]
         epoch_batches = list(iter_micro_batches(ordered_items, args.batch_size))
         index_batches = list(iter_micro_batches(order, args.batch_size))
         total_batches = len(epoch_batches)
@@ -448,7 +543,33 @@ def _run_training(
         model.train()
         optimizer.zero_grad(set_to_none=True)
         for b_idx, mb in enumerate(epoch_batches):
-            if args.method == "rlvr":
+            if isinstance(hook, DPOAdapterHook):
+                chosen_batch = collate_causal_lm_batch(
+                    [{"input_ids": x["chosen_input_ids"], "labels": x["chosen_labels"]} for x in mb],
+                    pad_token_id=int(pad_id),
+                    torch_module=torch,
+                    device=device_spec.device,
+                )
+                rejected_batch = collate_causal_lm_batch(
+                    [{"input_ids": x["rejected_input_ids"], "labels": x["rejected_labels"]} for x in mb],
+                    pad_token_id=int(pad_id),
+                    torch_module=torch,
+                    device=device_spec.device,
+                )
+                pi_chosen = _sequence_completion_logps(model, chosen_batch, torch)
+                pi_rejected = _sequence_completion_logps(model, rejected_batch, torch)
+                ref_chosen = torch.tensor(
+                    [float(x["ref_chosen_logp"]) for x in mb],
+                    dtype=pi_chosen.dtype,
+                    device=pi_chosen.device,
+                )
+                ref_rejected = torch.tensor(
+                    [float(x["ref_rejected_logp"]) for x in mb],
+                    dtype=pi_rejected.dtype,
+                    device=pi_rejected.device,
+                )
+                raw_loss, _, _ = hook.loss(pi_chosen, pi_rejected, ref_chosen, ref_rejected)
+            elif isinstance(hook, RLVRAdapterHook):
                 # Execute deterministic verifier hook on generated batch outputs
                 mb_rows = [train_rows[idx] for idx in index_batches[b_idx]]
                 val_prompts = [
@@ -474,7 +595,7 @@ def _run_training(
                     torch_module=torch,
                     device=device_spec.device,
                 )
-                rewards = hook.score_completions(  # type: ignore[union-attr]
+                rewards = hook.score_completions(
                     [r["prompt"] for r in mb_rows],
                     [g.text for g in gens],
                     [r["gold_label"] for r in mb_rows],
@@ -541,6 +662,8 @@ def _run_training(
                 "dataset_sha256": dataset_sha,
                 "spec_core_sha256": spec_core_sha,
                 "base_weights_sha256": base_weights_sha,
+                "method": args.method,
+                "preference_data_sha256": pref_sha,
                 "losses": losses,
                 "val_history": val_history,
             }
@@ -563,9 +686,10 @@ def _run_training(
         "adapter_sha256": sha_file(adapter_file),
         "adapter_config_sha256": sha_file(out_dir / "adapter_config.json"),
         "dataset_sha256": dataset_sha,
+        "preference_data_sha256": pref_sha,
         "spec_sha256": spec_sha,
         "spec_core_sha256": spec_core_sha,
-        "train_records": len(encoded_train),
+        "train_records": len(train_pool),
         "validation_records": len(encoded_val),
         "epochs": args.epochs,
         "batch_size": args.batch_size,

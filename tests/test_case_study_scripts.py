@@ -737,6 +737,71 @@ class CaseStudyScriptsEndToEndTest(unittest.TestCase):
                 self.assertEqual(resumed_manifest["epochs"], 2)
                 self.assertEqual(len(resumed_manifest["validation_history"]), 2)
 
+                # 10. --method dpo requires preference data and executes real DPO optimization
+                with self.assertRaisesRegex(SystemExit, "--preference-data"):
+                    train_lora.main(
+                        [
+                            "--hf-home",
+                            str(hf_home),
+                            "--task-dir",
+                            str(task_dir),
+                            "--output",
+                            str(root / "dpo_fail"),
+                            "--method",
+                            "dpo",
+                            "--model-registry",
+                            str(registry_path),
+                        ]
+                    )
+
+                pref_path = root / "prefs.jsonl"
+                pref_rows = [
+                    {
+                        "prompt": "Duplicate entry posted twice in settlement batch",
+                        "chosen": "DUPLICATE_RECORD_CONFIRMED",
+                        "rejected": "UNDETERMINED",
+                    },
+                    {
+                        "prompt": "Two cent fee rounding tolerance difference",
+                        "chosen": "AMOUNT_VARIANCE_ACCEPTED",
+                        "rejected": "DUPLICATE_RECORD_CONFIRMED",
+                    },
+                ]
+                pref_path.write_text("\n".join(json.dumps(r) for r in pref_rows) + "\n", encoding="utf-8")
+                dpo_dir = root / "dpo_out"
+                rc_dpo = train_lora.main(
+                    [
+                        "--hf-home",
+                        str(hf_home),
+                        "--task-dir",
+                        str(task_dir),
+                        "--output",
+                        str(dpo_dir),
+                        "--method",
+                        "dpo",
+                        "--preference-data",
+                        str(pref_path),
+                        "--epochs",
+                        "1",
+                        "--batch-size",
+                        "1",
+                        "--grad-accum",
+                        "1",
+                        "--max-seq",
+                        "64",
+                        "--threads",
+                        "1",
+                        "--model-registry",
+                        str(registry_path),
+                    ]
+                )
+                self.assertEqual(rc_dpo, 0)
+                dpo_manifest = json.loads((dpo_dir / "train_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(dpo_manifest["method"], "dpo")
+                self.assertEqual(dpo_manifest["train_records"], 2)
+                self.assertIsNotNone(dpo_manifest["preference_data_sha256"])
+                self.assertEqual(dpo_manifest["optimizer_steps"], 2)
+
 
 class BaselineFinalizeShowPubkeyCliTest(unittest.TestCase):
     def test_baseline_predict_rules_and_cli(self):
