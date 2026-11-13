@@ -16,6 +16,7 @@ import json
 import os
 import re
 import stat
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,10 @@ def backend_available() -> bool:
 
 def _win32_security_api() -> tuple[Any, Any]:
     """Return configured (advapi32, kernel32) WinDLL handles for ACL checks and hardening."""
+    # Unreachable on POSIX (callers gate via os.name == "nt"); the literal lets mypy
+    # skip WinDLL-only stubs on linux/macos runners without weakening win32 checking.
+    if sys.platform != "win32":
+        raise RuntimeError("_win32_security_api is Windows-only")
     import ctypes
     import ctypes.wintypes as wt
 
@@ -130,6 +135,9 @@ def _win32_sid_to_str(advapi32: Any, kernel32: Any, sid_ptr: Any) -> str | None:
 
 def _protect_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
     """Apply a protected owner/SYSTEM/Administrators-only DACL on a new Windows key file."""
+    # Unreachable on POSIX (sole caller gates via os.name == "nt"); literal for mypy platform skip.
+    if sys.platform != "win32":
+        raise RuntimeError("_protect_windows_key_acl is Windows-only")
     import ctypes
     import ctypes.wintypes as wt
 

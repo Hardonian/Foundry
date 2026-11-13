@@ -2,31 +2,31 @@
 training hooks, batch collation, gradient accumulation windows, prefix tries, and percentiles."""
 from __future__ import annotations
 
+import importlib.util
 import os
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 from unittest.mock import MagicMock
 
-import pytest
+# Dual-runner torch guard (see test_case_study_scripts.py): plain unittest discover cannot
+# honor pytest.importorskip; module-level unittest.SkipTest works under both runners.
+if importlib.util.find_spec("torch") is None:
+    raise unittest.SkipTest("torch not installed (optional [train] extra)")
 
-torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
+import torch  # noqa: E402
 
-from hardonian_foundry.training_utils import (
+from hardonian_foundry.training_utils import (  # noqa: E402
     DeviceSpec,
     DPOAdapterHook,
     ExactMatchVerifier,
     LabelPrefixTrie,
-    PrefixTrieLogitsProcessor,
     QLoRAAdapterHook,
     RLVRAdapterHook,
     SFTAdapterHook,
     acquire_training_lock,
     available_ram_bytes,
     batched_greedy_generate,
-    build_prefix_trie_logits_processor,
     check_disk_space,
     collate_causal_lm_batch,
     collate_left_padded_prompts,
@@ -168,6 +168,7 @@ class TrainingUtilsDeepTest(unittest.TestCase):
         # set_offline_env
         with tempfile.TemporaryDirectory() as tmp_hf:
             updates = set_offline_env(tmp_hf, threads=2, allow_gpu=False)
+            self.assertEqual(updates["HF_HUB_OFFLINE"], "1")  # returned dict matches applied env
             self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
             self.assertEqual(os.environ.get("TRANSFORMERS_OFFLINE"), "1")
             self.assertEqual(os.environ.get("CUDA_VISIBLE_DEVICES"), "")

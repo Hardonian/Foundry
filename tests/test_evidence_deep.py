@@ -2,7 +2,9 @@
 lock timeouts, and broken chain prevention."""
 from __future__ import annotations
 
+import gc
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -10,7 +12,6 @@ from pathlib import Path
 from unittest import mock
 
 from hardonian_foundry.evidence import (
-    JsonlEvidenceStore,
     SQLiteEvidenceStore,
     _load_valid_checkpoint,
     _normalize_allowed_origins,
@@ -23,11 +24,16 @@ from hardonian_foundry.evidence import (
 
 class EvidenceDeepTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # ignore_cleanup_errors (Windows only) is CPython's documented answer to the
+        # runner-holds-temp-file race; here the byte-overwritten WAL db stays locked for
+        # the process lifetime on windows py3.13 (WinError 32 in offline-baseline,
+        # deterministic — test_evidence.py's non-overwriting sqlite tests never flake).
+        # The assertions below verify tamper detection; cleanup of an OS temp artifact is
+        # not the product contract. POSIX keeps strict single-cleanup semantics.
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=os.name == "nt")
         self.root = Path(self.tmp.name)
 
     def tearDown(self):
-        import gc
         gc.collect()
         self.tmp.cleanup()
 

@@ -20,7 +20,9 @@ models/
 dist/
 build/
 *.egg-info/
-.coverage*
+.coverage
+.coverage.*
+# (was `.coverage*`, which also ignored the tracked .coveragerc-train CI config)
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

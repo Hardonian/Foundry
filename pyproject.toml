@@ -65,6 +65,14 @@ warn_unused_ignores = true
 [tool.coverage.run]
 source = ["hardonian_foundry"]
 branch = true
+# training_utils.py is torch-only (optional [train] extra). The offline-baseline matrix
+# deliberately installs no torch, so its torch tests skip there and this module measures
+# ~31% while gating pure-stdlib logic it does not exercise. Instead of weakening the
+# threshold, the lightweight gate omits it AND the dedicated `train-coverage` CI job
+# (torch CPU wheel installed) runs the full suite against .coveragerc-train, which
+# measures this module with NO omit at the same fail-under=85. Torch code stays
+# covered somewhere; nothing is silently excluded from coverage overall.
+omit = ["*/training_utils.py"]
 
 [tool.coverage.report]
 show_missing = true

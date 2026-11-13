@@ -304,6 +304,9 @@ def set_offline_env(
 
 def _verify_windows_private_dir(resolved: Path, label: str) -> None:
     """Inspect Windows owner and NTFS DACL via advapi32/kernel32 ctypes."""
+    # Unreachable on POSIX (caller gates via os.name == "nt"); literal for mypy platform skip.
+    if sys.platform != "win32":
+        raise RuntimeError("_verify_windows_private_dir is Windows-only")
     from ctypes import wintypes
 
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -532,7 +535,9 @@ def chmod_private(path: str | Path) -> None:
 
 def available_ram_bytes() -> int:
     """Return available physical RAM in bytes across Linux, macOS, and Windows."""
-    if os.name == "nt":
+    # sys.platform literal (equivalent to os.name == "nt") so mypy skips the WinDLL
+    # branch on linux/macos runners while still checking it on Windows runners.
+    if sys.platform == "win32":
         class _MemoryStatusEx(ctypes.Structure):
             _fields_ = [
                 ("dwLength", ctypes.c_uint32),

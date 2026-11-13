@@ -8,9 +8,12 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
-import pytest
+# Dual-runner torch guard (see test_case_study_scripts.py): plain unittest discover cannot
+# honor pytest.importorskip; module-level unittest.SkipTest works under both runners.
+if importlib.util.find_spec("torch") is None:
+    raise unittest.SkipTest("torch not installed (optional [train] extra)")
 
-torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
+import torch  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"

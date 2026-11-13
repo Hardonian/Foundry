@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable
@@ -27,18 +28,21 @@ from typing import IO, Any, Protocol, runtime_checkable
 
 from .canonical import canonical
 
-try:
+# Arm selection by platform literal rather than try/except ImportError: identical on
+# real platforms (fcntl on POSIX, msvcrt on Windows) but lets mypy statically skip the
+# unreachable arm on each runner (typeshed gates these modules by sys.platform).
+if sys.platform != "win32":
     import fcntl
 
     def _lock(file_obj: IO[Any], *, timeout: float = 30.0) -> None:
         del timeout
-        fcntl.flock(file_obj, fcntl.LOCK_EX)  # type: ignore[attr-defined]
+        fcntl.flock(file_obj, fcntl.LOCK_EX)
 
     def _unlock(file_obj: IO[Any]) -> None:
-        fcntl.flock(file_obj, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        fcntl.flock(file_obj, fcntl.LOCK_UN)
 
     _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-except ImportError:
+else:
     import msvcrt
 
     def _lock(file_obj: IO[Any], *, timeout: float = 30.0) -> None:
