@@ -9,6 +9,8 @@ import os
 import time
 from pathlib import Path
 
+from hardonian_foundry import synthetic_policy
+
 try:
     import fcntl
 except ImportError:
@@ -80,6 +82,27 @@ def summarize(rows):
             "token_limit_hits": sum(r["max_token_limit_hit"] for r in rows), "by_expected": by_label}
 
 
+def deterministic_baseline(challenge):
+    """Run the existing policy on structured fields, not the model prompt."""
+    fields = ("id", "expected_minor", "actual_minor", "expected_currency", "actual_currency")
+    return [{"id": row["id"], "expected": row["expected_label"],
+             "output": synthetic_policy.assess({key: row[key] for key in fields})["category"],
+             "max_token_limit_hit": False} for row in challenge]
+
+
+def compare_to_baseline(baseline, model):
+    """Count paired strict wins and losses, rejecting mismatched case sequences."""
+    if len(baseline) != len(model) or any(
+        b["id"] != m["id"] or b["expected"] != m["expected"]
+        for b, m in zip(baseline, model)
+    ):
+        raise ValueError("baseline and model cases do not align")
+    return {"model_only_correct": sum(m["output"] == m["expected"] and b["output"] != b["expected"]
+                                      for b, m in zip(baseline, model)),
+            "baseline_only_correct": sum(b["output"] == b["expected"] and m["output"] != m["expected"]
+                                         for b, m in zip(baseline, model))}
+
+
 def main():
     os.umask(0o077)
     p = argparse.ArgumentParser(description=__doc__)
@@ -143,7 +166,10 @@ def run_eval(args, root, cache, snap, adapter, manifest, challenge):
     protocol = {"challenge_sha256": hashlib.sha256(content).hexdigest(), "adapter_sha256": manifest["adapter_sha256"],
                 "adapter_config_sha256": manifest["adapter_config_sha256"], "model": MODEL, "revision": REVISION,
                 "scoring": "exact and case-normalized labels; missing/different currency requires review",
-                "do_sample": False, "max_new_tokens": 8, "training_on_challenge": False}
+                "baseline": "synthetic_policy.assess on structured fields; challenge oracle encodes the same rules",
+                "do_sample": False, "max_new_tokens": 8,
+                "training_on_challenge": None,
+                "training_on_challenge_assessment": "not verified; exact prompt overlap checked against supplied dataset"}
     (output / "protocol.json").write_text(json.dumps(protocol, sort_keys=True, indent=2) + "\n")
     tokenizer, model = load_verified_snapshot(snap, AutoTokenizer, AutoModelForCausalLM, torch)
     config = GenerationConfig(do_sample=False, max_new_tokens=8, pad_token_id=tokenizer.eos_token_id,
@@ -165,18 +191,26 @@ def run_eval(args, root, cache, snap, adapter, manifest, challenge):
     base = generate(model)
     model = PeftModel.from_pretrained(model, adapter, is_trainable=False, local_files_only=True)
     adapted = generate(model)
+    baseline = deterministic_baseline(challenge)
     result = {"status": "completed", "data_origin": "synthetic", "model": MODEL, "revision": REVISION,
               "base_model_sha256": MODEL_SHA256, "adapter_sha256": manifest["adapter_sha256"],
               "adapter_config_sha256": manifest["adapter_config_sha256"], "challenge_sha256": protocol["challenge_sha256"],
               "training_dataset_sha256": manifest["dataset_sha256"], "protocol_sha256": sha_file(output / "protocol.json"),
+              "baseline_script_sha256": sha_file(Path(synthetic_policy.__file__)),
               "script_sha256": sha_file(Path(__file__)), "base": {"metrics": summarize(base), "cases": base},
               "adapter": {"metrics": summarize(adapted), "cases": adapted},
+              "deterministic_baseline": {"metrics": summarize(baseline), "cases": baseline},
+              "versus_deterministic_baseline": {"base": compare_to_baseline(baseline, base),
+                                                 "adapter": compare_to_baseline(baseline, adapted)},
               "duration_seconds": round(time.monotonic() - started, 2),
               "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "peft": peft.__version__},
-              "limitations": ["authored synthetic challenge not representative of production", "no retraining on challenge", "observed test is no longer pristine", "unsigned metadata", "all production outcomes require deterministic policy and human review"]}
+              "limitations": ["authored synthetic challenge not representative of production", "challenge labels and deterministic baseline encode the same rules; baseline score is rule self-consistency", "baseline receives structured fields while models receive text", "no retraining on challenge is an unverified claim", "observed test is no longer pristine", "unsigned metadata and hashes are not authenticated provenance", "no promotion decision", "all production outcomes require deterministic policy and human review"]}
     (output / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"evaluation_dir": str(output), "challenge_sha256": result["challenge_sha256"],
                       "base": result["base"]["metrics"], "adapter": result["adapter"]["metrics"],
+                      "deterministic_baseline": result["deterministic_baseline"]["metrics"],
+                      "versus_deterministic_baseline": result["versus_deterministic_baseline"],
+                      "limitations": result["limitations"],
                       "duration_seconds": result["duration_seconds"]}, indent=2), flush=True)
 
 
