@@ -31,10 +31,13 @@ class EvidenceDeepTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()
         if os.name == "nt":
-            # Windows lags handle release after re-opening a tampered WAL db (WinError 32
-            # race observed in offline-baseline windows runners). Retry the teardown for a
-            # bounded window; POSIX unlink has no such race and keeps single-cleanup semantics.
-            deadline = time.monotonic() + 10.0
+            # Windows lags handle release on freshly-written sqlite temp files
+            # (re-opened tampered WAL db; WinError 32 race observed on offline-baseline
+            # windows runners — one green run, two red, same code). Defender-style scans
+            # can hold files without share-delete for tens of seconds. Retry cleanup for
+            # a bounded window; POSIX unlink has no such race and keeps single-cleanup semantics.
+            deadline = time.monotonic() + 45.0
+            delay = 0.2
             while True:
                 try:
                     self.tmp.cleanup()
@@ -43,7 +46,8 @@ class EvidenceDeepTest(unittest.TestCase):
                     if time.monotonic() >= deadline:
                         raise
                     gc.collect()
-                    time.sleep(0.25)
+                    time.sleep(delay)
+                    delay = min(delay * 2, 2.0)
         self.tmp.cleanup()
 
     def test_normalize_allowed_origins(self):
