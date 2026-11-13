@@ -2,164 +2,292 @@
 
 This is an in-domain smoke, not a pristine or commercially valid benchmark.
 """
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import os
-import shutil
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 try:
-    import fcntl
+    from hardonian_foundry.training_utils import (
+        DEFAULT_BLOBS,
+        DEFAULT_MODEL_ID,
+        DEFAULT_MODEL_SHA256,
+        DEFAULT_REVISION,
+        MIN_AVAILABLE_RAM_BYTES,
+        SUPPORTED_DEVICES,
+        TrainingLockError,
+        acquire_training_lock,
+        available_ram_bytes,
+        batched_greedy_generate,
+        check_disk_space,
+        chmod_private,
+        load_verified_snapshot,
+        mkdir_private,
+        resolve_model_spec,
+        select_device,
+        set_offline_env,
+        sha_file,
+        snapshot_path,
+        verify_private_dir,
+        verify_snapshot,
+    )
 except ImportError:
-    fcntl = None
+    sys.modules.pop("hardonian_foundry", None)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from hardonian_foundry.training_utils import (
+        DEFAULT_BLOBS,
+        DEFAULT_MODEL_ID,
+        DEFAULT_MODEL_SHA256,
+        DEFAULT_REVISION,
+        MIN_AVAILABLE_RAM_BYTES,
+        SUPPORTED_DEVICES,
+        TrainingLockError,
+        acquire_training_lock,
+        available_ram_bytes,
+        batched_greedy_generate,
+        check_disk_space,
+        chmod_private,
+        load_verified_snapshot,
+        mkdir_private,
+        resolve_model_spec,
+        select_device,
+        set_offline_env,
+        sha_file,
+        snapshot_path,
+        verify_private_dir,
+        verify_snapshot,
+    )
 
-from train_synthetic_lora import (
-    BLOBS,
-    MODEL,
-    MODEL_SHA256,
-    REVISION,
-    examples,
-    load_verified_snapshot,
-    sha_file,
-)
+try:
+    from train_synthetic_lora import examples
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from train_synthetic_lora import examples
+
+MODEL = DEFAULT_MODEL_ID
+REVISION = DEFAULT_REVISION
+MODEL_SHA256 = DEFAULT_MODEL_SHA256
+BLOBS = dict(DEFAULT_BLOBS)
 
 
-def metrics(rows):
+def metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute binary mismatch detection metrics plus invalid-output tracking."""
     tp = sum(r["expected"] == "amount_mismatch" and r["output"] == "amount_mismatch" for r in rows)
     fp = sum(r["expected"] == "matched" and r["output"] == "amount_mismatch" for r in rows)
     fn = sum(r["expected"] == "amount_mismatch" and r["output"] != "amount_mismatch" for r in rows)
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
     f1 = 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None
-    return {"correct": sum(r["output"] == r["expected"] for r in rows), "total": len(rows),
-            "precision": precision, "recall": recall, "f1": f1,
-            "false_negative_rate": fn / (tp + fn) if tp + fn else None,
-            "invalid_outputs": sum(r["output"] not in ("matched", "amount_mismatch") for r in rows),
-            "max_token_limit_hits": sum(r["max_token_limit_hit"] for r in rows)}
+    return {
+        "correct": sum(r["output"] == r["expected"] for r in rows),
+        "total": len(rows),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "false_negative_rate": fn / (tp + fn) if tp + fn else None,
+        "invalid_outputs": sum(r["output"] not in ("matched", "amount_mismatch") for r in rows),
+        "max_token_limit_hits": sum(r["max_token_limit_hit"] for r in rows),
+    }
 
 
-def verify_adapter_hashes(adapter, manifest):
+def verify_adapter_hashes(adapter: Path, manifest: dict[str, Any]) -> None:
     """Reject missing or modified adapter weights or configuration."""
-    for key, filename in (("adapter_sha256", "adapter_model.safetensors"),
-                          ("adapter_config_sha256", "adapter_config.json")):
+    for key, filename in (
+        ("adapter_sha256", "adapter_model.safetensors"),
+        ("adapter_config_sha256", "adapter_config.json"),
+    ):
         path = adapter / filename
         if not path.is_file() or not manifest.get(key) or manifest[key] != sha_file(path):
             raise ValueError(f"missing or mismatched {key}; older manifests cannot be safely evaluated")
 
 
-def main():
-    os.umask(0o077)
+def main() -> None:
+    if os.name != "nt":
+        os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hf-home", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--threads", type=int, default=4, choices=range(1, 5))
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--device", default="cpu", choices=SUPPORTED_DEVICES)
+    parser.add_argument("--model-registry", type=Path, default=None)
     args = parser.parse_args()
-    root = args.output_root.resolve(strict=True)
-    run = args.run_dir.resolve(strict=True)
-    cache = args.hf_home.resolve(strict=True)
-    for p in (root, run):
-        if not p.is_dir() or p.stat().st_uid != os.getuid() or p.stat().st_mode & 0o077:
-            raise SystemExit("run and output directories must be owner-only")
-    disk = shutil.disk_usage(root)
-    if disk.free < 10 * 1024**3 or disk.used / disk.total >= 0.80:
-        raise SystemExit("output filesystem below 10 GiB free or at least 80% utilized")
-    if os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") < 8 * 1024**3:
-        raise SystemExit("less than 8 GiB free physical memory")
-    snap = cache / "hub" / "models--Qwen--Qwen2.5-Coder-0.5B-Instruct" / "snapshots" / REVISION
-    if any(not (snap / name).is_file() for name in ("model.safetensors", *BLOBS)):
-        raise SystemExit("required model files are missing; no download attempted")
-    if sha_file(snap / "model.safetensors") != MODEL_SHA256:
-        raise SystemExit("base model hash mismatch")
-    for name, expected in BLOBS.items():
-        payload = (snap / name).read_bytes()
-        if hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest() != expected:
-            raise SystemExit(f"model metadata mismatch: {name}")
-    data = (run / "synthetic-dataset.json").read_bytes()
-    expected_data = json.dumps(examples(), sort_keys=True, separators=(",", ":")).encode()
-    if data != expected_data:
-        raise SystemExit("only the built-in synthetic dataset is supported")
-    manifest = json.loads((run / "result.json").read_text())
-    adapter = run / "adapter"
-    if (manifest.get("status") != "completed" or manifest.get("model") != MODEL or
-        manifest.get("revision") != REVISION or manifest.get("dataset_sha256") != hashlib.sha256(data).hexdigest()):
-        raise SystemExit("training run manifest mismatch")
+    if args.batch_size <= 0:
+        raise SystemExit("--batch-size must be positive")
+
     try:
+        root = verify_private_dir(args.output_root, label="output root")
+        run = verify_private_dir(args.run_dir, label="run directory")
+        cache = args.hf_home.expanduser().resolve(strict=True)
+        check_disk_space(root)
+        if available_ram_bytes() < MIN_AVAILABLE_RAM_BYTES:
+            raise ValueError("less than 8 GiB free physical memory")
+
+        data_path = run / "synthetic-dataset.json"
+        if not data_path.is_file() or not (run / "result.json").is_file():
+            raise ValueError("missing synthetic-dataset.json or result.json in run directory")
+        data = data_path.read_bytes()
+        expected_data = json.dumps(examples(), sort_keys=True, separators=(",", ":")).encode()
+        if data != expected_data:
+            raise ValueError("only the built-in synthetic dataset is supported")
+        manifest = json.loads((run / "result.json").read_text(encoding="utf-8"))
+        spec = resolve_model_spec(manifest.get("model"), registry_path=args.model_registry)
+        snap = snapshot_path(cache, spec.model_id, spec.revision)
+        verify_snapshot(
+            snap,
+            model_sha256=spec.model_sha256,
+            blobs=spec.blobs or None,
+            weight_files=spec.weight_files or None,
+        )
+        adapter = run / "adapter"
+        if (
+            manifest.get("status") != "completed"
+            or manifest.get("model") != spec.model_id
+            or manifest.get("revision") != spec.revision
+            or manifest.get("dataset_sha256") != hashlib.sha256(data).hexdigest()
+        ):
+            raise ValueError("training run manifest mismatch")
         verify_adapter_hashes(adapter, manifest)
-    except ValueError as exc:
+        cfg = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
+        expected_targets = {"q_proj", "v_proj"} if spec.model_id == DEFAULT_MODEL_ID else set(spec.lora_target_modules)
+        if (
+            cfg.get("peft_type") != "LORA"
+            or cfg.get("task_type") != "CAUSAL_LM"
+            or cfg.get("r") != 4
+            or cfg.get("lora_alpha") != 8
+            or set(cfg.get("target_modules", [])) != expected_targets
+            or cfg.get("auto_mapping") is not None
+            or cfg.get("modules_to_save") is not None
+        ):
+            raise ValueError("unsupported adapter configuration")
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
-    cfg = json.loads((adapter / "adapter_config.json").read_text())
-    if (cfg.get("peft_type") != "LORA" or cfg.get("task_type") != "CAUSAL_LM" or cfg.get("r") != 4 or
-        cfg.get("lora_alpha") != 8 or set(cfg.get("target_modules", [])) != {"q_proj", "v_proj"} or
-        cfg.get("auto_mapping") is not None or cfg.get("modules_to_save") is not None):
-        raise SystemExit("unsupported adapter configuration")
-    lock_file = root / ".training.lock"
-    fd = os.open(lock_file, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "r+") as lock:
-        try:
-            if fcntl is not None:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise SystemExit("another participating Foundry training job holds the lock") from exc
-        run_eval(args, root, cache, snap, adapter, data, manifest)
+
+    try:
+        with acquire_training_lock(root / ".training.lock"):
+            run_eval(args, root, cache, snap, adapter, data, manifest, model_spec=spec)
+    except TrainingLockError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
-def run_eval(args, root, cache, snap, adapter, data, manifest):
-    os.environ.update(CUDA_VISIBLE_DEVICES="", HF_HOME=str(cache), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
-                      HF_HUB_DISABLE_TELEMETRY="1", HF_HUB_DISABLE_IMPLICIT_TOKEN="1",
-                      OMP_NUM_THREADS=str(args.threads), MKL_NUM_THREADS=str(args.threads), TOKENIZERS_PARALLELISM="false")
+def run_eval(
+    args: argparse.Namespace,
+    root: Path,
+    cache: Path,
+    snap: Path,
+    adapter: Path,
+    data: bytes,
+    manifest: dict[str, Any],
+    *,
+    model_spec: Any | None = None,
+) -> None:
+    spec = model_spec or resolve_model_spec(manifest.get("model"))
+    requested_device = getattr(args, "device", "cpu")
+    set_offline_env(cache, threads=args.threads, allow_gpu=(requested_device != "cpu"))
     import peft
     import torch
     import transformers
     from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    device_spec = select_device(requested_device, torch)
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     torch.manual_seed(1729)
     started = time.monotonic()
-    output = root / (time.strftime("synthetic-generation-eval-%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}")
-    output.mkdir(mode=0o700, exist_ok=False)
-    tokenizer, model = load_verified_snapshot(snap, AutoTokenizer, AutoModelForCausalLM, torch)
+    output = mkdir_private(
+        root / (time.strftime("synthetic-generation-eval-%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"),
+        exist_ok=False,
+    )
+    dtype = getattr(torch, device_spec.torch_dtype_name, torch.float32)
+    tokenizer, model = load_verified_snapshot(
+        snap,
+        AutoTokenizer,
+        AutoModelForCausalLM,
+        torch,
+        device=device_spec.device,
+        dtype=dtype,
+    )
     holdout = json.loads(data)["holdout"]
-    generation_config = GenerationConfig(do_sample=False, max_new_tokens=8,
-                                         pad_token_id=tokenizer.eos_token_id,
-                                         eos_token_id=tokenizer.eos_token_id)
+    prompt_ids = [
+        list(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": row["prompt"]}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+        for row in holdout
+    ]
+    batch_size = getattr(args, "batch_size", 4)
 
-    def generate(m):
-        m.eval()
-        results = []
-        for row in holdout:
-            prompt = tokenizer.apply_chat_template([{"role": "user", "content": row["prompt"]}],
-                tokenize=True, add_generation_prompt=True, return_tensors="pt")
-            with torch.no_grad():
-                generated = m.generate(input_ids=prompt, attention_mask=torch.ones_like(prompt),
-                                       generation_config=generation_config)
-            tokens = generated[0, prompt.shape[-1]:]
-            answer = tokenizer.decode(tokens, skip_special_tokens=True).strip()
-            hit = len(tokens) == 8 and int(tokens[-1]) != tokenizer.eos_token_id
-            results.append({"id": row["id"], "expected": row["answer"], "output": answer,
-                            "max_token_limit_hit": hit})
-        return results
+    def generate(m: Any) -> list[dict[str, Any]]:
+        outputs = batched_greedy_generate(
+            m,
+            tokenizer,
+            prompt_ids,
+            max_new_tokens=8,
+            batch_size=batch_size,
+            return_confidence=False,
+            torch_module=torch,
+            device=device_spec.device,
+        )
+        return [
+            {
+                "id": row["id"],
+                "expected": row["answer"],
+                "output": res.text,
+                "max_token_limit_hit": res.max_token_limit_hit,
+            }
+            for row, res in zip(holdout, outputs, strict=True)
+        ]
 
     base = generate(model)
     model = PeftModel.from_pretrained(model, adapter, is_trainable=False, local_files_only=True)
     adapted = generate(model)
-    result = {"status": "completed", "data_origin": "synthetic", "model": MODEL, "revision": REVISION,
-              "base_model_sha256": MODEL_SHA256, "adapter_sha256": manifest["adapter_sha256"],
-              "adapter_config_sha256": manifest["adapter_config_sha256"],
-              "dataset_sha256": manifest["dataset_sha256"], "training_script_sha256": manifest["script_sha256"],
-              "evaluation_script_sha256": sha_file(Path(__file__)), "decoding": {"do_sample": False, "max_new_tokens": 8},
-              "base": {"metrics": metrics(base), "cases": base},
-              "adapter": {"metrics": metrics(adapted), "cases": adapted},
-              "regressions": sum(b["output"] == b["expected"] and a["output"] != a["expected"] for b, a in zip(base, adapted)),
-              "improvements": sum(b["output"] != b["expected"] and a["output"] == a["expected"] for b, a in zip(base, adapted)),
-              "duration_seconds": round(time.monotonic() - started, 2),
-              "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "peft": peft.__version__},
-              "limitations": ["four authored synthetic examples", "holdout already used for teacher-forced evaluation; not pristine", "not customer data or commercial validation", "no promotion"]}
-    (output / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    result = {
+        "status": "completed",
+        "data_origin": "synthetic",
+        "model": spec.model_id,
+        "revision": spec.revision,
+        "base_model_sha256": manifest.get("base_model_sha256", spec.model_sha256),
+        "adapter_sha256": manifest["adapter_sha256"],
+        "adapter_config_sha256": manifest["adapter_config_sha256"],
+        "dataset_sha256": manifest["dataset_sha256"],
+        "training_script_sha256": manifest["script_sha256"],
+        "evaluation_script_sha256": sha_file(Path(__file__)),
+        "device": device_spec.device,
+        "batch_size": batch_size,
+        "decoding": {"do_sample": False, "max_new_tokens": 8},
+        "base": {"metrics": metrics(base), "cases": base},
+        "adapter": {"metrics": metrics(adapted), "cases": adapted},
+        "regressions": sum(
+            b["output"] == b["expected"] and a["output"] != a["expected"]
+            for b, a in zip(base, adapted, strict=True)
+        ),
+        "improvements": sum(
+            b["output"] != b["expected"] and a["output"] == a["expected"]
+            for b, a in zip(base, adapted, strict=True)
+        ),
+        "duration_seconds": round(time.monotonic() - started, 2),
+        "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "peft": peft.__version__},
+        "limitations": [
+            "four authored synthetic examples",
+            "holdout already used for teacher-forced evaluation; not pristine",
+            "not customer data or commercial validation",
+            "no promotion",
+        ],
+    }
+    result_path = output / "result.json"
+    result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    chmod_private(result_path)
     print(json.dumps({"evaluation_dir": str(output), **result}, indent=2), flush=True)
 
 
