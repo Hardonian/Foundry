@@ -235,6 +235,8 @@ class SigningKeyringAndPermissionTest(unittest.TestCase):
             {"trusted_keys": [k1], "required_roles": [""]},
             {"trusted_keys": [k1, k1]},
             {"trusted_keys": [{"public_key_hex": k1, "revoked_at": ""}]},
+            {"trusted_keys": [{"public_key_hex": k1, "revoked": True}]},
+            {"trusted_keys": [{"public_key_hex": k1, "revoke_at": "2026-01-01T00:00:00Z"}]},
             {"trusted_keys": [k1], "unexpected_policy_flag": True},
         ):
             with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
@@ -275,6 +277,22 @@ class SigningKeyringAndPermissionTest(unittest.TestCase):
             subprocess.run(["icacls", key_path, "/grant", "*S-1-1-0:R"], check=True, stdout=subprocess.DEVNULL)
             with self.assertRaisesRegex(ValueError, "broad Windows ACL"):
                 signing.sign(b"payload", key_path)
+
+    @unittest.skipUnless(os.name == "nt", "Windows NTFS inherited ACL check only")
+    def test_windows_generate_keypair_protects_against_inherited_broad_dir_acl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shared_parent = os.path.join(tmp, "shared_workspace")
+            os.makedirs(shared_parent)
+            # Simulate C:\ / CI workspace dir granting inherited read to BUILTIN\Users & Everyone
+            subprocess.run(
+                ["icacls", shared_parent, "/grant", "*S-1-5-32-545:(OI)(CI)R", "*S-1-1-0:(OI)(CI)R"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            key_path = os.path.join(shared_parent, "ci-runner.pem")
+            info = signing.generate_keypair(key_path)
+            sig = signing.sign(b"ci-payload", key_path)
+            self.assertTrue(signing.verify(b"ci-payload", sig, info["public_key_hex"]))
 
 
 if __name__ == "__main__":

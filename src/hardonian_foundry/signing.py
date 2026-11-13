@@ -10,6 +10,7 @@ hex (ed25519 raw 32-byte encoding).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -42,6 +43,13 @@ _KEYRING_TOP_FIELDS = frozenset({
     "description",
     "notes",
 })
+_KEYRING_ENTRY_FIELDS = frozenset({
+    "public_key_hex",
+    "key_id",
+    "role",
+    "revoked_at",
+    "label",
+})
 
 # Broad Windows SIDs that must never hold access to private key files.
 _WIN_BROAD_SIDS = frozenset({
@@ -68,13 +76,144 @@ def backend_available() -> bool:
     return SIGNING_BACKEND is not None
 
 
-def _check_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
-    """Reject Windows private key files whose NTFS DACL grants broad or unexpected access."""
+def _win32_security_api() -> tuple[Any, Any]:
+    """Return configured (advapi32, kernel32) WinDLL handles for ACL checks and hardening."""
     import ctypes
     import ctypes.wintypes as wt
 
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wt.LPCWSTR, wt.DWORD, wt.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wt.DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wt.LPWSTR, wt.DWORD, wt.DWORD,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wt.DWORD
+    advapi32.GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, wt.DWORD]
+    advapi32.GetAclInformation.restype = wt.BOOL
+    advapi32.GetAce.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetAce.restype = wt.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.LPWSTR)]
+    advapi32.ConvertSidToStringSidW.restype = wt.BOOL
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wt.LPCWSTR, wt.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wt.ULONG),
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wt.BOOL
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wt.BOOL), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wt.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wt.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    return advapi32, kernel32
+
+
+def _win32_sid_to_str(advapi32: Any, kernel32: Any, sid_ptr: Any) -> str | None:
+    import ctypes
+    import ctypes.wintypes as wt
+
+    sid_str = wt.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str)):
+        return None
+    try:
+        return sid_str.value
+    finally:
+        kernel32.LocalFree(sid_str)
+
+
+def _protect_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
+    """Apply a protected owner/SYSTEM/Administrators-only DACL on a new Windows key file."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    advapi32, kernel32 = _win32_security_api()
+    se_file_object = 1
+    owner_sec_info = 0x00000001
+    dacl_sec_info = 0x00000004
+    protected_dacl_sec_info = 0x80000000
+    sddl_revision_1 = 1
+
+    path_str = os.fspath(private_key_path)
+    p_owner = ctypes.c_void_p()
+    p_owner_sd = ctypes.c_void_p()
+    err = advapi32.GetNamedSecurityInfoW(
+        path_str,
+        se_file_object,
+        owner_sec_info,
+        ctypes.byref(p_owner),
+        None,
+        None,
+        None,
+        ctypes.byref(p_owner_sd),
+    )
+    if err != 0 or not p_owner.value:
+        if p_owner_sd.value:
+            kernel32.LocalFree(p_owner_sd)
+        raise OSError(f"cannot read Windows file owner SID for {path_str} (error {err})")
+
+    try:
+        owner_sid = _win32_sid_to_str(advapi32, kernel32, p_owner)
+    finally:
+        kernel32.LocalFree(p_owner_sd)
+
+    if not owner_sid:
+        raise OSError(f"cannot format Windows owner SID for {path_str}")
+
+    aces = [f"(A;;FA;;;{owner_sid})"]
+    if owner_sid != "S-1-5-18":
+        aces.append("(A;;FA;;;SY)")
+    if owner_sid != "S-1-5-32-544":
+        aces.append("(A;;FA;;;BA)")
+    sddl = "D:P" + "".join(aces)
+
+    p_new_sd = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, sddl_revision_1, ctypes.byref(p_new_sd), None
+    ):
+        raise OSError(f"cannot build protected Windows SDDL for {path_str} (error {ctypes.get_last_error()})")
+
+    try:
+        dacl_present = wt.BOOL()
+        dacl_defaulted = wt.BOOL()
+        p_dacl = ctypes.c_void_p()
+        if (
+            not advapi32.GetSecurityDescriptorDacl(
+                p_new_sd, ctypes.byref(dacl_present), ctypes.byref(p_dacl), ctypes.byref(dacl_defaulted)
+            )
+            or not dacl_present.value
+            or not p_dacl.value
+        ):
+            raise OSError(f"cannot extract protected Windows DACL for {path_str}")
+
+        err = advapi32.SetNamedSecurityInfoW(
+            ctypes.create_unicode_buffer(path_str),
+            se_file_object,
+            dacl_sec_info | protected_dacl_sec_info,
+            None,
+            None,
+            p_dacl,
+            None,
+        )
+        if err != 0:
+            raise OSError(f"cannot apply protected Windows DACL on {path_str} (error {err})")
+    finally:
+        if p_new_sd.value:
+            kernel32.LocalFree(p_new_sd)
+
+
+def _check_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
+    """Reject Windows private key files whose NTFS DACL grants broad or unexpected access."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    advapi32, kernel32 = _win32_security_api()
 
     se_file_object = 1
     owner_sec_info = 0x00000001
@@ -93,22 +232,6 @@ def _check_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
     class _AccessAllowedAce(ctypes.Structure):
         _fields_ = [("Header", _AceHeader), ("Mask", wt.DWORD), ("SidStart", wt.DWORD)]
 
-    advapi32.GetNamedSecurityInfoW.argtypes = [
-        wt.LPCWSTR, wt.DWORD, wt.DWORD,
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetNamedSecurityInfoW.restype = wt.DWORD
-    advapi32.GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, wt.DWORD]
-    advapi32.GetAclInformation.restype = wt.BOOL
-    advapi32.GetAce.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-    advapi32.GetAce.restype = wt.BOOL
-    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.LPWSTR)]
-    advapi32.ConvertSidToStringSidW.restype = wt.BOOL
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-
     p_owner = ctypes.c_void_p()
     p_dacl = ctypes.c_void_p()
     p_sd = ctypes.c_void_p()
@@ -125,19 +248,10 @@ def _check_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
     if err != 0:
         raise ValueError(f"cannot verify private key Windows ACL (error {err})")
 
-    def _sid_to_str(sid_ptr: ctypes.c_void_p | int) -> str | None:
-        sid_str = wt.LPWSTR()
-        if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str)):
-            return None
-        try:
-            return sid_str.value
-        finally:
-            kernel32.LocalFree(sid_str)
-
     try:
         if not p_dacl.value:
             raise ValueError("private key must not have an unrestricted NULL DACL")
-        owner_sid = _sid_to_str(p_owner) if p_owner.value else None
+        owner_sid = _win32_sid_to_str(advapi32, kernel32, p_owner) if p_owner.value else None
         size_info = _AclSizeInfo()
         if not advapi32.GetAclInformation(p_dacl, ctypes.byref(size_info), ctypes.sizeof(size_info), acl_size_info_class):
             raise ValueError("cannot inspect private key DACL entries")
@@ -155,7 +269,7 @@ def _check_windows_key_acl(private_key_path: str | os.PathLike[str]) -> None:
             if hdr.AceType != access_allowed_ace_type or (hdr.AceFlags & inherit_only_ace):
                 continue
             sid_ptr = ctypes.c_void_p(ace_addr + _AccessAllowedAce.SidStart.offset)
-            sid_str = _sid_to_str(sid_ptr)
+            sid_str = _win32_sid_to_str(advapi32, kernel32, sid_ptr)
             if sid_str is None:
                 raise ValueError("cannot decode private key ACE principal")
             if sid_str in _WIN_BROAD_SIDS:
@@ -181,7 +295,7 @@ def generate_keypair(private_key_path: str | os.PathLike[str]) -> dict[str, str]
     """Create a new Ed25519 private key PEM at path (refuses if it exists).
 
     Returns {"public_key_hex", "private_key_path"}. File is mode 0600 on POSIX
-    and checked against broad Windows ACLs on Windows.
+    and protected with an owner/SYSTEM/Administrators-only DACL on Windows.
     """
     if not backend_available():
         raise SigningUnavailable("signing backend unavailable")
@@ -201,8 +315,15 @@ def generate_keypair(private_key_path: str | os.PathLike[str]) -> dict[str, str]
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(payload)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+        if os.name == "nt":
+            _protect_windows_key_acl(path_str)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(path_str)
+        raise
     public_hex = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     ).hex()
@@ -322,6 +443,9 @@ def parse_keyring(data: Any) -> dict[str, Any]:
             revoked_at: str | None = None
             label: str | None = None
         elif isinstance(entry, dict):
+            unknown_entry = sorted(set(entry) - _KEYRING_ENTRY_FIELDS)
+            if unknown_entry:
+                raise ValueError(f"unknown keyring entry fields: {', '.join(unknown_entry)}")
             raw_pub = entry.get("public_key_hex")
             key_id = _clean_optional_str(entry.get("key_id"), field="key_id", limit=128)
             role = _clean_optional_str(entry.get("role"), field="role", limit=64)

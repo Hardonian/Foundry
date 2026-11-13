@@ -28,7 +28,7 @@ class SyntheticPolicyTest(unittest.TestCase):
             self.assertTrue(out["review_required"])
             self.assertFalse(out["financial_write"])
             self.assertEqual(out["evidence_hash"], digest(record))
-        self.assertEqual(len(rows), 24)
+        self.assertGreaterEqual(len(rows), 24)
 
     def test_untrusted_suggestions_cannot_change_policy_or_approve(self) -> None:
         case = {

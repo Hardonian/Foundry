@@ -122,8 +122,10 @@ class EvidenceTest(unittest.TestCase):
         with open(self.path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
         self.assertEqual(evidence.verify(self.path)["status"], "OK")  # chain alone sees nothing
+        self.assertEqual(evidence.verify(self.path, expected_count=1)["status"], "OK")
         report = evidence.verify(self.path, expected_head=anchor)
         self.assertEqual(report["status"], "TAMPERED")
+        self.assertEqual(evidence.verify(self.path, expected_count=2)["status"], "TAMPERED")
         self.assertEqual(evidence.verify(self.path, expected_count=True)["status"], "TAMPERED")
 
     def test_append_refuses_broken_chain(self) -> None:
