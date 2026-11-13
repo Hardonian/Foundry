@@ -4,11 +4,6 @@ Synthetic-only research baseline. Never deploy for real financial data or autono
 """
 from __future__ import annotations
 
-try:
-    from .canonical import canonical, digest  # type: ignore[import-not-found,import-untyped]
-except ImportError:  # pragma: no cover - pre-merge fallback
-    from .baseline import canonical, digest
-
 from . import signing
 from .baseline import (
     dataset as default_dataset,
@@ -17,6 +12,7 @@ from .baseline import (
     reconciliation,
     split,
 )
+from .canonical import canonical, digest
 from .evidence import _append_with_builder as evidence_append_with_builder
 from .evidence import append as evidence_append
 from .evidence import verify_entries as evidence_verify_entries

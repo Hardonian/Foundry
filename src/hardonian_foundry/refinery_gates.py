@@ -6,12 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-try:
-    from .canonical import canonical, digest  # type: ignore[import-not-found,import-untyped]
-except ImportError:  # pragma: no cover - pre-merge fallback
-    from .baseline import canonical, digest
-
 from . import signing
+from .canonical import canonical, digest
 from .refinery_attestation import (
     _evaluate_license_compat,
     extract_verified_license_attachment,

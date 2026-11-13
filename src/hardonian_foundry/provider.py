@@ -24,11 +24,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-try:
-    from .canonical import digest  # type: ignore[import-not-found,import-untyped]
-except ImportError:  # pragma: no cover - pre-merge fallback
-    from .baseline import digest
-
+from .canonical import digest
 from .types import ProviderResult
 
 MAX_RESPONSE = 32768

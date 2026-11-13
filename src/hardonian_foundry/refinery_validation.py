@@ -8,12 +8,8 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
-try:
-    from .canonical import digest  # type: ignore[import-not-found,import-untyped]
-except ImportError:  # pragma: no cover - pre-merge fallback
-    from .baseline import digest
-
 from .baseline import reconciliation, split
+from .canonical import digest
 from .types import ValidationResult
 
 DEFAULT_RUNS_DIR = os.path.join(".foundry", "runs")

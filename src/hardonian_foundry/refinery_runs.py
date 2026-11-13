@@ -14,14 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-try:
-    from .canonical import digest  # type: ignore[import-not-found,import-untyped]
-except ImportError:  # pragma: no cover - pre-merge fallback
-    from .baseline import digest
-
 from . import tenancy
 from .baseline import dataset as default_dataset
 from .baseline import reconciliation
+from .canonical import digest
 from .evidence import append as evidence_append
 from .evidence import verify_entries as evidence_verify_entries
 from .refinery_preflight import run_preflight

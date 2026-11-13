@@ -803,7 +803,7 @@ def select_device(requested: str = "cpu", torch_module: Any | None = None) -> De
     mps_backend = getattr(getattr(torch_mod, "backends", None), "mps", None)
     mps_avail = bool(mps_backend is not None and mps_backend.is_available())
     try:
-        import torch_directml  # type: ignore[import-not-found]
+        import torch_directml
         dml_avail = bool(torch_directml.device())
     except ImportError:
         torch_directml = None
@@ -911,7 +911,7 @@ class QLoRAAdapterHook(SFTAdapterHook):
                 "refusing silent CPU fallback"
             )
         try:
-            import bitsandbytes  # type: ignore[import-not-found]  # noqa: F401
+            import bitsandbytes  # noqa: F401
         except ImportError as exc:
             raise RuntimeError("qlora requires bitsandbytes installed alongside CUDA PyTorch") from exc
 
