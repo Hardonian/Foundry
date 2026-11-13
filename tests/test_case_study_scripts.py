@@ -12,9 +12,13 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
-import pytest
+# Dual-runner torch guard: pytest.importorskip raises pytest's Skipped (BaseException) which
+# plain `unittest discover` reports as an import ERROR (CI step "Offline unit tests"). A
+# module-level unittest.SkipTest is honored by BOTH runners.
+if importlib.util.find_spec("torch") is None:
+    raise unittest.SkipTest("torch not installed (optional [train] extra)")
 
-torch = pytest.importorskip("torch")  # optional train extra; skip module without torch
+import torch  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
