@@ -89,7 +89,7 @@ def _evaluate_task_thresholds(
     thresholds = task_block.get("thresholds")
     baseline_f1 = _as_rate(baseline.get("macro_f1") if isinstance(baseline, dict) else None)
     model_f1 = _as_rate(model.get("macro_f1") if isinstance(model, dict) else None)
-    spec_min = _as_rate(thresholds.get("macro_f1_min", 0.8) if isinstance(thresholds, dict) else None)
+    spec_min = 0.8 if thresholds is None else _as_rate(thresholds.get("macro_f1_min", 0.8) if isinstance(thresholds, dict) else None)
     evidence_summary["task_baseline_macro_f1"] = baseline_f1
     evidence_summary["task_model_macro_f1"] = model_f1
 

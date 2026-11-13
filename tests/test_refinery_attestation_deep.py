@@ -6,13 +6,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hardonian_foundry.refinery_attestation import (
+    _evaluate_license_compat,
+    _iter_ledger_entries,
     anchor_run,
+    attach_license,
     extract_verified_license_attachment,
     load_keyring,
     load_keyring_policy,
     parse_keyring,
+    sign_run,
 )
 from hardonian_foundry.signing import generate_keypair
 
@@ -68,17 +73,65 @@ class RefineryAttestationDeepTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_keyring({"trusted_keys": [pub1], "required_roles": "not-a-list"})
 
-        # Unknown entry fields in trusted_keys
+        # Unknown entry fields in trusted_keys (passed as list to execute refinery_attestation parser)
         with self.assertRaises(ValueError):
-            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "rogue_field": "x"}]})
+            parse_keyring([{"public_key_hex": pub1, "rogue_field": "x"}])
 
         # Invalid role / key_id / revoked_at in entry
         with self.assertRaises(ValueError):
-            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "role": "  "}]})
+            parse_keyring([{"public_key_hex": pub1, "role": "  "}])
         with self.assertRaises(ValueError):
-            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "key_id": ""}]})
+            parse_keyring([{"public_key_hex": pub1, "key_id": ""}])
         with self.assertRaises(ValueError):
-            parse_keyring({"trusted_keys": [{"public_key_hex": pub1, "revoked_at": ""}]})
+            parse_keyring([{"public_key_hex": pub1, "revoked_at": ""}])
+        with self.assertRaises(ValueError):
+            parse_keyring([{"public_key_hex": pub1, "label": 123}])
+        with self.assertRaises(TypeError):
+            parse_keyring([12345])
+
+        # Duplicate public key in policy raises ValueError from signing_mod
+        with self.assertRaises(ValueError) as ctx:
+            parse_keyring({
+                "trusted_keys": [
+                    {"public_key_hex": pub1, "role": "sec"},
+                    {"public_key_hex": pub1, "role": "admin"},
+                ]
+            })
+        self.assertIn("duplicate public_key_hex", str(ctx.exception))
+
+        # Merging duplicate key records in refinery_attestation with mock signing_mod
+        mock_sign = mock.MagicMock()
+        mock_sign.parse_keyring.return_value = {}
+        mock_sign.normalize_trusted_keys.return_value = [pub1]
+        with mock.patch("hardonian_foundry.refinery_attestation.facade_attr", return_value=mock_sign):
+            merged = parse_keyring({
+                "trusted_keys": [
+                    {"public_key_hex": pub1, "role": "sec", "key_id": "k1"},
+                    {"public_key_hex": pub1, "revoked_at": "2026-11-12T00:00:00Z", "label": "test-label"},
+                ]
+            })
+            self.assertEqual(len(merged["keys"]), 1)
+            self.assertTrue(merged["keys"][0]["revoked"])
+            self.assertEqual(merged["keys"][0]["role"], "sec")
+            self.assertEqual(merged["keys"][0]["label"], "test-label")
+
+    def test_iter_ledger_entries_and_license_compat(self):
+        # Missing or non-file path returns []
+        self.assertEqual(_iter_ledger_entries(self.root / "missing.jsonl", "run-1", "type1"), [])
+        self.assertEqual(_iter_ledger_entries("", "run-1", "type1"), [])
+
+        # Ledger with blank lines and corrupt JSON returns []
+        bad_ledger = self.root / "bad_ledger.jsonl"
+        bad_ledger.write_text("\n\n{bad json\n", encoding="utf-8")
+        self.assertEqual(_iter_ledger_entries(bad_ledger, "run-1", "type1"), [])
+
+        # _evaluate_license_compat fallback on TypeError
+        def legacy_eval(manifest):
+            return {"decision": "ALLOWED", "reasons": []}
+
+        with mock.patch("hardonian_foundry.refinery_attestation.facade_attr", return_value=legacy_eval):
+            res = _evaluate_license_compat({"name": "synth"}, allowed_data_origins=["synthetic"])
+            self.assertEqual(res["decision"], "ALLOWED")
 
     def test_load_keyring_and_load_keyring_policy(self):
         k = generate_keypair(self.root / "k3.pem")
@@ -105,6 +158,119 @@ class RefineryAttestationDeepTest(unittest.TestCase):
 
         policy_obj = load_keyring_policy(keyring_file)
         self.assertEqual(policy_obj["required_signatures"], 1)
+
+        # Invalid file content
+        keyring_file.write_text(json.dumps([pub]), encoding="utf-8")
+        with self.assertRaises(TypeError):
+            load_keyring(keyring_file)
+        with self.assertRaises(TypeError):
+            load_keyring_policy(keyring_file)
+
+    def test_attach_license_and_sign_run_edge_cases(self):
+        priv = generate_keypair(self.root / "sign_key.pem")
+        manifest = {
+            "name": "synth-model",
+            "license_id": "Apache-2.0",
+            "provenance": "synthetic",
+            "data_origin": "synthetic",
+        }
+
+        # attach_license when run does not exist
+        with self.assertRaises(FileNotFoundError):
+            attach_license("run-nonexistent", manifest=manifest, output_root=self.root)
+
+        # sign_run when run does not exist
+        with self.assertRaises(FileNotFoundError):
+            sign_run("run-nonexistent", private_key_path=priv["private_key_path"], output_root=self.root)
+
+        # Create mock run directory
+        run_dir = self.root / "run-test-tenant"
+        run_dir.mkdir(parents=True)
+        run_file = run_dir / "run.json"
+
+        # Missing provenance
+        run_file.write_text(json.dumps({"run_id": "run-test-tenant"}), encoding="utf-8")
+        with self.assertRaises(TypeError):
+            sign_run("run-test-tenant", private_key_path=priv["private_key_path"], output_root=self.root)
+
+        # Ledger file missing
+        run_file.write_text(
+            json.dumps({"run_id": "run-test-tenant", "provenance": {"evidence_ledger_path": "missing_ledger.jsonl"}}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            attach_license("run-test-tenant", manifest=manifest, output_root=self.root)
+        with self.assertRaises(ValueError):
+            sign_run("run-test-tenant", private_key_path=priv["private_key_path"], output_root=self.root)
+
+    def test_sign_run_and_attach_license_with_tenant_and_errors(self):
+        from hardonian_foundry.evidence import append as evidence_append
+        from hardonian_foundry.refinery_runs import create_run
+        from hardonian_foundry.tenancy import TenantContext
+
+        priv1 = generate_keypair(self.root / "k_tenant1.pem")
+        priv2 = generate_keypair(self.root / "k_tenant2.pem")
+        tctx = TenantContext(tenant_id="tenant-audit", request_id="req-audit")
+        run = create_run(output_root=self.root, tenant_context=tctx)
+        rid = run["run_id"]
+
+        manifest = {
+            "name": "synth-model-tenant",
+            "license_id": "Apache-2.0",
+            "provenance": "synthetic",
+            "data_origin": "synthetic",
+        }
+        # Attach license with tenant context in run record (covers tenant_id in payload, line 274)
+        att_res = attach_license(rid, manifest=manifest, output_root=self.root)
+        self.assertEqual(att_res["decision"], "ALLOWED")
+
+        # Sign run with tenant context in run record (covers tenant_id in sig_record, line 401)
+        sig_res = sign_run(rid, private_key_path=priv1["private_key_path"], output_root=self.root)
+        self.assertEqual(sig_res["run_id"], rid)
+
+        # Signing again with the same key raises ValueError (key has already signed, line 377)
+        with self.assertRaises(ValueError) as ctx_dup:
+            sign_run(rid, private_key_path=priv1["private_key_path"], output_root=self.root, cosign=True)
+        self.assertIn("has already signed", str(ctx_dup.exception))
+
+        # Appending a signature with version "1" into the ledger triggers version/run_sha256 mismatch (line 373)
+        ledger_path = self.root / "evidence.jsonl"
+        evidence_append(str(ledger_path), {
+            "type": "promotion_signature",
+            "version": "1",
+            "run_id": rid,
+            "run_sha256": "0" * 64,
+            "data_origin": "synthetic",
+        })
+
+        with self.assertRaises(ValueError) as ctx_mismatch:
+            sign_run(rid, private_key_path=priv2["private_key_path"], output_root=self.root, cosign=True)
+        self.assertIn("existing signature does not match current run", str(ctx_mismatch.exception))
+
+    def test_anchor_run_failures(self):
+        # Anchor unverified run_id
+        with mock.patch("hardonian_foundry.refinery_attestation.inspect_run", return_value={"provenance_status": "TAMPERED"}):
+            with self.assertRaises(ValueError) as ctx:
+                anchor_run("run-unverified", output_root=self.root)
+            self.assertIn("cannot anchor unverified run", str(ctx.exception))
+
+        # Whole ledger missing
+        missing_root = self.root / "missing_root"
+        with self.assertRaises(FileNotFoundError):
+            anchor_run(output_root=missing_root)
+
+        # Whole ledger symlink escape
+        with mock.patch.object(Path, "is_relative_to", return_value=False):
+            with self.assertRaises(ValueError) as ctx:
+                anchor_run(output_root=self.root)
+            self.assertIn("escapes output_root", str(ctx.exception))
+
+        # Whole ledger tampered
+        tampered_ledger = self.root / "evidence.jsonl"
+        tampered_ledger.write_text(json.dumps({"seq": 1, "invalid": True}) + "\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            anchor_run(output_root=self.root)
+        self.assertIn("cannot anchor tampered ledger", str(ctx.exception))
 
     def test_extract_verified_license_attachment(self):
         # Empty entries

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
 from hardonian_foundry import licensing, signing
@@ -89,10 +90,14 @@ class LicensingTest(unittest.TestCase):
             self.assertEqual(result["decision"], "DENIED")
             self.assertFalse(result["promotion_allowed"])
             self.assertTrue(result["review_required"])
+        result_weights = licensing.evaluate("not-dict", verify_weights_path="dummy.bin")
+        self.assertFalse(result_weights["weights_verified"])
 
     def test_loopback_source_url_allowed(self) -> None:
         result = licensing.evaluate({**VALID, "source_url": "http://127.0.0.1:8080/weights"})
         self.assertEqual(result["decision"], "ALLOWED")
+        res_https = licensing.evaluate({**VALID, "source_url": "https://huggingface.co/models/v1"})
+        self.assertEqual(res_https["decision"], "ALLOWED")
 
     def test_notes_validation(self) -> None:
         self.assertEqual(licensing.evaluate({**VALID, "notes": "Verified adapter.\nOk."})["decision"], "ALLOWED")
@@ -182,6 +187,72 @@ class LicensingTest(unittest.TestCase):
 
         for bad_origins in ("synthetic", (), ("customer",)):
             self.assert_denied(dict(VALID), "allowed_data_origins", allowed_data_origins=bad_origins)
+
+        # Attestation field validations
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": "not-a-dict"},
+            "must be a dict",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": {"tier": "consented_pilot"}},
+            "missing required fields",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": {**pilot_attestation, "extra_field": True}},
+            "unknown fields",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": {**pilot_attestation, "approved_by": "   "}},
+            "must be a clean nonempty string",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": {**pilot_attestation, "consent_scope": ""}},
+            "consent_scope must be a clean",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**pilot_manifest, "governance_attestation": {**pilot_attestation, "notes": 123}},
+            "notes must be a bounded string",
+            allowed_data_origins=("consented_pilot",),
+        )
+        self.assert_denied(
+            {**redacted_manifest, "governance_attestation": {**dict(redacted_manifest["governance_attestation"]), "redacted": "not-bool"}},  # type: ignore[arg-type]
+            "redacted must be boolean",
+            allowed_data_origins=("redacted_eval",),
+        )
+
+        # data_origin is not permitted by multi-tier allowed_data_origins
+        self.assert_denied(
+            {**VALID, "data_origin": "redacted_eval"},
+            "not permitted by allowed_data_origins",
+            allowed_data_origins=("synthetic", "consented_pilot"),
+        )
+
+        # synthetic data origin with governance_attestation attached
+        synth_with_att = {
+            **VALID,
+            "governance_attestation": {
+                "tier": "synthetic",
+                "attestation_id": "att-synth-01",
+                "approved_by": "lead",
+                "approved_at": "2026-11-12T00:00:00Z",
+            },
+        }
+        res_synth_att = licensing.evaluate(synth_with_att)
+        self.assertEqual(res_synth_att["decision"], "ALLOWED")
+
+        # verify_weights_path read error (OSError)
+        with tempfile.NamedTemporaryFile() as ntf:
+            with mock.patch("hashlib.file_digest", side_effect=OSError("disk read fault")):
+                self.assert_denied(
+                    {**VALID, "weights_sha256": "0" * 64},
+                    "could not be read for verification",
+                    verify_weights_path=ntf.name,
+                )
 
 
 @unittest.skipUnless(signing.backend_available(), "signing extra unavailable")

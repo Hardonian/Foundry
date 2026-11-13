@@ -5,11 +5,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hardonian_foundry.signing import (
+    SigningUnavailable,
+    _check_private_key_permissions,
     backend_available,
+    check_keyring_quorum,
+    fingerprint,
     generate_keypair,
+    load_keyring_policy,
     normalize_trusted_keys,
+    parse_keyring,
     public_key_hex,
     sign,
     verify,
@@ -84,6 +91,71 @@ class SigningDeepTest(unittest.TestCase):
             normalize_trusted_keys(["not-hex"])
         with self.assertRaises(ValueError):
             normalize_trusted_keys([123])  # type: ignore[list-item]
+
+    def test_normalize_trusted_keys_none_and_fingerprint(self):
+        self.assertEqual(normalize_trusted_keys(None), [])
+        k = generate_keypair(self.root / "k_fp.pem")
+        fp = fingerprint(k["public_key_hex"])
+        self.assertEqual(len(fp), 64)
+
+    def test_backend_unavailable_simulation(self):
+        key_path = self.root / "key_unavail.pem"
+        with mock.patch("hardonian_foundry.signing.backend_available", return_value=False):
+            with self.assertRaises(SigningUnavailable):
+                generate_keypair(key_path)
+            with self.assertRaises(SigningUnavailable):
+                sign(b"test", key_path)
+            with self.assertRaises(SigningUnavailable):
+                public_key_hex(key_path)
+            self.assertFalse(verify(b"test", "0" * 128, "0" * 64))
+
+    def test_check_private_key_permissions_not_file(self):
+        # Passing a directory instead of a regular file
+        stat_mock = mock.MagicMock(st_mode=0o040755)  # Directory mode
+        with self.assertRaises(ValueError) as ctx:
+            _check_private_key_permissions(self.root, stat_mock)
+        self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_signing_keyring_quorum_and_policy(self):
+        k1 = generate_keypair(self.root / "k1_q.pem")
+        k2 = generate_keypair(self.root / "k2_q.pem")
+        pub1 = k1["public_key_hex"]
+        pub2 = k2["public_key_hex"]
+
+        # Parse raw list of keys
+        policy_from_list = parse_keyring([pub1, pub2])
+        self.assertEqual(policy_from_list["required_signatures"], 1)
+        self.assertEqual(len(policy_from_list["active_keys"]), 2)
+
+        # Quorum satisfied with active keys
+        q_res = check_keyring_quorum(policy_from_list, [pub1])
+        self.assertTrue(q_res["satisfied"])
+        self.assertEqual(q_res["valid_count"], 1)
+
+        # Quorum with revoked key
+        policy_revoked = parse_keyring({
+            "trusted_keys": [
+                {"public_key_hex": pub1, "role": "admin", "revoked_at": "2026-11-12T00:00:00Z"},
+                {"public_key_hex": pub2, "role": "admin"},
+            ],
+            "required_signatures": 1,
+            "required_roles": ["admin"],
+        })
+        # Verifying with only revoked key fails quorum
+        q_rev = check_keyring_quorum(policy_revoked, [pub1])
+        self.assertFalse(q_rev["satisfied"])
+        self.assertIn(pub1, q_rev["revoked_signers"])
+
+        # Verifying with active key satisfies quorum
+        q_ok = check_keyring_quorum(policy_revoked, [pub2])
+        self.assertTrue(q_ok["satisfied"])
+        self.assertEqual(q_ok["roles_satisfied"], ["admin"])
+
+        # load_keyring_policy non-dict JSON error
+        bad_json = self.root / "bad_policy.json"
+        bad_json.write_text("[1, 2, 3]", encoding="utf-8")
+        with self.assertRaises(TypeError):
+            load_keyring_policy(bad_json)
 
 
 if __name__ == "__main__":

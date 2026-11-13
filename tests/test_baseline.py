@@ -31,7 +31,19 @@ class BaselineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             reconciliation({"id": "synthetic-a", "expected_minor": True, "actual_minor": 1, "critical": False})
         with self.assertRaises(ValueError):
+            reconciliation({"id": "synthetic-a", "expected_minor": 1, "actual_minor": 1, "critical": "not-bool"})
+        with self.assertRaises(ValueError):
+            reconciliation({"id": "non-synthetic-id", "expected_minor": 1, "actual_minor": 1, "critical": False})
+        with self.assertRaises(ValueError):
+            reconciliation({"id": "synthetic-" + "x" * 101, "expected_minor": 1, "actual_minor": 1, "critical": False})
+        with self.assertRaises(ValueError):
+            reconciliation({"id": 12345, "expected_minor": 1, "actual_minor": 1, "critical": False})  # type: ignore[dict-item]
+        with self.assertRaises(ValueError):
             reconciliation({"id": "a", "expected_minor": 1, "actual_minor": 1, "critical": False, "extra": 1})
+        with self.assertRaises(ValueError):
+            verify_trace("not-a-dict")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            verify_trace({"id": "synthetic-case", "tool": "read_record", "arguments": "not-a-dict"})  # type: ignore[dict-item]
 
     def test_policy_does_not_execute_and_blocks_adversarial_inputs(self) -> None:
         for tool in ("shell", "delete", "read_record ", "write_record", "READ_RECORD", "read\u200brecord", "bash"):
@@ -79,6 +91,8 @@ class BaselineTest(unittest.TestCase):
             split(dataset() + [{**dataset()[0], "id": "synthetic-duplicate"}])
         with self.assertRaises(ValueError):
             split(dataset()[:2])
+        with self.assertRaises(ValueError):
+            split(dataset(), seed="not-an-int")  # type: ignore[arg-type]
         self.assertEqual(split(dataset()), split(list(reversed(dataset()))))
         for n in range(3, 60):
             parts = split(dataset()[:n])
@@ -112,6 +126,11 @@ class BaselineTest(unittest.TestCase):
         for bad_dict in ({1: "a"}, {True: "a"}, {1.5: "a"}, {None: "a"}, {(1, 2): "a"}, {"ok": [{2: "b"}]}):
             with self.assertRaises(ValueError):
                 canonical(bad_dict)
+
+        # Unserializable objects raise TypeError
+        for bad_type in (set(), {1, 2}, object(), lambda: None):
+            with self.assertRaises(TypeError):
+                canonical(bad_type)
 
         # Lone UTF-16 surrogates rejected in keys and values without UnicodeEncodeError
         for bad_surrogate in ("\ud800", "\udfff", {"\udc00": 1}, {"k": ["\ud83d"]}):

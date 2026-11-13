@@ -5,8 +5,11 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hardonian_foundry.artifact import (
+    _atomic_copy_file,
+    _atomic_write_bytes,
     _resolve_store_dir,
     _validate_label,
     add_artifact,
@@ -33,6 +36,12 @@ class ArtifactStoreTest(unittest.TestCase):
         digest, size = sha256_file(f)
         self.assertEqual(digest, expected)
         self.assertEqual(size, len(b"hello hardonian foundry"))
+
+        # Symlink target
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            d_sym, s_sym = sha256_file(f)
+            self.assertEqual(d_sym, expected)
+            self.assertEqual(s_sym, size)
 
         # Nonexistent file
         with self.assertRaises(FileNotFoundError):
@@ -114,9 +123,39 @@ class ArtifactStoreTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             add_artifact(src, store_dir=self.store, name="invalid/slash")
         with self.assertRaises(ValueError):
+            add_artifact(src, store_dir=self.store, name="!unsafe_name")
+        with self.assertRaises(ValueError):
             add_artifact(src, store_dir=self.store, kind="k" * 100)
         with self.assertRaises(ValueError):
             add_artifact(src, store_dir=self.store, run_id="invalid space id")
+
+    def test_atomic_helpers_posix_and_failure_cleanup(self):
+        dest_file = self.root / "atomic_dest.bin"
+        src_file = self.root / "atomic_src.bin"
+        src_file.write_bytes(b"source data")
+
+        # Posix chmod simulation
+        with mock.patch("hardonian_foundry.artifact.os.name", "posix"), mock.patch("hardonian_foundry.artifact.os.chmod") as mock_chmod:
+            _atomic_write_bytes(dest_file, b"test posix")
+            self.assertTrue(mock_chmod.called)
+
+        with mock.patch("hardonian_foundry.artifact.os.name", "posix"), mock.patch("hardonian_foundry.artifact.os.chmod") as mock_chmod:
+            _atomic_copy_file(src_file, dest_file)
+            self.assertTrue(mock_chmod.called)
+
+        # Replace failure triggers unlink in finally block
+        with mock.patch("hardonian_foundry.artifact.os.replace", side_effect=OSError("disk failure")):
+            with self.assertRaises(OSError):
+                _atomic_write_bytes(dest_file, b"test fail")
+            with self.assertRaises(OSError):
+                _atomic_copy_file(src_file, dest_file)
+
+    def test_get_artifact_path_escape_error(self):
+        fake_sha = "0" * 64
+        with mock.patch.object(Path, "is_relative_to", return_value=False):
+            with self.assertRaises(ValueError) as ctx:
+                get_artifact_path(fake_sha, store_dir=self.store)
+            self.assertIn("escapes store directory", str(ctx.exception))
 
     def test_verify_artifact(self):
         src = self.root / "data.bin"

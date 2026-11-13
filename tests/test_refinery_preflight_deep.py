@@ -94,6 +94,19 @@ class RefineryPreflightDeepTest(unittest.TestCase):
         res = run_preflight(dataset=task_data, task_spec=task_spec, output_root=self.root)
         self.assertEqual(res["status"], "PASSED")
 
+    def test_preflight_license_compat_typeerror_fallback(self):
+        # Test facade evaluate_license that does not accept allowed_data_origins keyword
+        def legacy_eval(manifest):
+            return {"decision": "ALLOWED", "reasons": []}
+
+        with patch("hardonian_foundry.refinery_preflight.facade_attr", return_value=legacy_eval):
+            res = run_preflight(
+                output_root=self.root,
+                model_manifest={"name": "test"},
+                allowed_data_origins=["synthetic"],
+            )
+            self.assertEqual(res["status"], "PASSED")
+
 
 if __name__ == "__main__":
     unittest.main()

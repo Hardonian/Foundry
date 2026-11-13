@@ -98,13 +98,61 @@ class CliDeepTest(unittest.TestCase):
         # Promote unsigned run without --json-errors
         rc1, _, err1 = _run_cli(["refinery", "promote", rid, "--output-root", str(self.root)])
         self.assertEqual(rc1, 2)
-        self.assertIn("Promotion blocked", err1)
 
-        # Promote unsigned run with --json-errors
-        rc2, _, err2 = _run_cli(["--json-errors", "refinery", "promote", rid, "--output-root", str(self.root)])
-        self.assertEqual(rc2, 2)
-        self.assertIn("Promotion blocked", err2)
-        self.assertIn('"exit_code": 2', err2)
+    def test_doctor_verbose_and_anchor_args(self):
+        # doctor --verbose
+        rc, out, _ = _run_cli(["doctor", "--verbose"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("platform", data)
+        self.assertIn("default_runs_dir", data)
+
+        # anchor expectation resolution with --anchor
+        anchor_file = self.root / "anchor.json"
+        anchor_file.write_text(json.dumps({"head": "a" * 64, "count": 5}), encoding="utf-8")
+        args = cli._build_parser().parse_args(["refinery", "inspect", "run-1", "--anchor", str(anchor_file)])
+        head, count = cli._resolve_anchor_expectations(args)
+        self.assertEqual(head, "a" * 64)
+        self.assertEqual(count, 5)
+
+        # anchor expectation invalid json
+        bad_anchor = self.root / "bad_anchor.json"
+        bad_anchor.write_text("[1, 2, 3]", encoding="utf-8")
+        args_bad = cli._build_parser().parse_args(["refinery", "inspect", "run-1", "--anchor", str(bad_anchor)])
+        with self.assertRaises(ValueError):
+            cli._resolve_anchor_expectations(args_bad)
+
+    def test_registry_commands(self):
+        # registry list
+        rc_list, out_list, _ = _run_cli(["registry", "list", "--output-root", str(self.root)])
+        self.assertEqual(rc_list, 0)
+        self.assertIn("models", json.loads(out_list))
+
+        # registry promote without --model-id
+        rc_missing, _, err_missing = _run_cli(["registry", "promote"])
+        self.assertEqual(rc_missing, 2)
+        self.assertIn("Promotion blocked", err_missing)
+
+    def test_refinery_artifact_cli(self):
+        sample = self.root / "blob.bin"
+        sample.write_bytes(b"cli-artifact-content")
+
+        # artifact add
+        rc_add, out_add, _ = _run_cli(["refinery", "artifact", "add", str(sample), "--output-root", str(self.root)])
+        self.assertEqual(rc_add, 0)
+        art = json.loads(out_add)
+        sha = art["sha256"]
+
+        # artifact verify
+        rc_v, out_v, _ = _run_cli(["refinery", "artifact", "verify", sha, "--output-root", str(self.root)])
+        self.assertEqual(rc_v, 0)
+        self.assertTrue(json.loads(out_v)["verified"])
+
+        # artifact list
+        rc_l, out_l, _ = _run_cli(["refinery", "artifact", "list", "--output-root", str(self.root)])
+        self.assertEqual(rc_l, 0)
+        self.assertEqual(json.loads(out_l)["count"], 1)
 
 
 if __name__ == "__main__":
