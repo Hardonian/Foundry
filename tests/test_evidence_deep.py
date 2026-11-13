@@ -2,9 +2,12 @@
 lock timeouts, and broken chain prevention."""
 from __future__ import annotations
 
+import gc
 import json
+import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,8 +29,21 @@ class EvidenceDeepTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     def tearDown(self):
-        import gc
         gc.collect()
+        if os.name == "nt":
+            # Windows lags handle release after re-opening a tampered WAL db (WinError 32
+            # race observed in offline-baseline windows runners). Retry the teardown for a
+            # bounded window; POSIX unlink has no such race and keeps single-cleanup semantics.
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    self.tmp.cleanup()
+                    return
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    gc.collect()
+                    time.sleep(0.25)
         self.tmp.cleanup()
 
     def test_normalize_allowed_origins(self):
