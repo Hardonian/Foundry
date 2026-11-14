@@ -4,12 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hardonian-foundry"
-version = "0.3.0"
+version = "1.0.0"
 description = "Evidence-first model lifecycle: tamper-evident runs and fail-closed promotion gates"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+keywords = [
+  "ai-safety",
+  "evaluation",
+  "governance",
+  "audit-trail",
+  "ed25519",
+  "model-lifecycle",
+  "mlops",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Security :: Cryptography",
+  "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Hardonian/Foundry"
+Repository = "https://github.com/Hardonian/Foundry"
+Documentation = "https://github.com/Hardonian/Foundry/tree/main/docs"
+Changelog = "https://github.com/Hardonian/Foundry/blob/main/CHANGELOG.md"
+Security = "https://github.com/Hardonian/Foundry/blob/main/SECURITY.md"
+Issues = "https://github.com/Hardonian/Foundry/issues"
 
 [project.optional-dependencies]
 signing = ["cryptography>=42.0"]
@@ -38,6 +68,9 @@ foundry = "hardonian_foundry.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+hardonian_foundry = ["py.typed"]
 
 [tool.ruff]
 target-version = "py311"

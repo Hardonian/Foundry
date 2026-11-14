@@ -36,6 +36,7 @@ from .refinery_runs import (
     diff_runs,
     evaluate_dataset,
     export_bundle,
+    generate_audit_report,
     inspect_run,
     list_runs,
     verify_bundle,
@@ -49,7 +50,14 @@ from .refinery_validation import (
     validate_dataset,
     validate_run_id,
 )
+from .registry import (
+    get_model,
+    list_models,
+    register_model,
+    verify_registry,
+)
 from .task_eval import (
+    compare_task_predictions,
     score_predictions,
     split_task_dataset,
     validate_spec,
@@ -64,6 +72,7 @@ __all__ = [
     "anchor_run",
     "attach_license",
     "canonical",
+    "compare_task_predictions",
     "create_run",
     "create_task_run",
     "default_dataset",
@@ -77,12 +86,16 @@ __all__ = [
     "evidence_verify_entries",
     "export_bundle",
     "extract_verified_license_attachment",
+    "generate_audit_report",
+    "get_model",
     "inspect_run",
+    "list_models",
     "list_runs",
     "load_keyring",
     "load_keyring_policy",
     "parse_keyring",
     "reconciliation",
+    "register_model",
     "resolve_ledger_path",
     "resolve_run_dir",
     "run_preflight",
@@ -97,4 +110,5 @@ __all__ = [
     "validate_spec",
     "validate_task_dataset",
     "verify_bundle",
+    "verify_registry",
 ]

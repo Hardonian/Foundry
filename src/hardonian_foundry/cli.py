@@ -265,13 +265,62 @@ def _handle_provider(args: argparse.Namespace, *, json_errors: bool) -> int:
 
 
 def _handle_registry(args: argparse.Namespace, *, json_errors: bool) -> int:
-    from .refinery import evaluate_promotion, list_runs, load_keyring
+    from .refinery import (
+        evaluate_promotion,
+        get_model,
+        list_models,
+        load_keyring,
+        register_model,
+        verify_registry,
+    )
 
     try:
         tenant_ctx = _build_tenant_context(args)
+        reg_path = getattr(args, "registry_path", None)
+
         if args.operation == "list":
-            runs = list_runs(output_root=args.output_root, tenant_context=tenant_ctx) if args.output_root else []
-            _emit_json({"models": [], "runs": runs, "message": "No model registry is configured."})
+            if args.output_root is None and reg_path is None:
+                _emit_json({
+                    "models": [],
+                    "runs": [],
+                    "count": 0,
+                    "registry_status": "EMPTY",
+                    "message": "No model registry is configured.",
+                })
+                return EXIT_OK
+            list_res = list_models(
+                output_root=args.output_root,
+                registry_path=reg_path,
+                tenant_context=tenant_ctx,
+            )
+            _emit_json(list_res)
+            return EXIT_OK
+
+        if args.operation == "verify":
+            keyring = load_keyring(args.keyring) if args.keyring else None
+            ver_res = verify_registry(
+                output_root=args.output_root,
+                registry_path=reg_path,
+                keyring=keyring,
+                tenant_context=tenant_ctx,
+            )
+            _emit_json(ver_res)
+            return EXIT_OK if ver_res["verified"] else EXIT_CHECK_FAILED
+
+        if args.operation == "get":
+            if not args.model_id:
+                return _emit_error(
+                    "Registry error: model_id or run_id is required for `registry get`.",
+                    json_errors=json_errors,
+                    exit_code=EXIT_BLOCKED_OR_ERROR,
+                )
+            entry = get_model(
+                args.model_id,
+                output_root=args.output_root,
+                registry_path=reg_path,
+                tenant_context=tenant_ctx,
+            )
+            _emit_json(entry)
             return EXIT_OK
 
         if not args.model_id:
@@ -291,6 +340,25 @@ def _handle_registry(args: argparse.Namespace, *, json_errors: bool) -> int:
             expected_count=exp_count,
             tenant_context=tenant_ctx,
         )
+        if promo["promoted"] and (args.operation == "register" or args.output_root is not None or reg_path is not None):
+            reg_out = register_model(
+                args.model_id,
+                model_id=getattr(args, "name", None),
+                output_root=args.output_root,
+                registry_path=reg_path,
+                keyring=keyring,
+                expected_head=exp_head,
+                expected_count=exp_count,
+                tenant_context=tenant_ctx,
+                notes=getattr(args, "notes", None),
+            )
+            _emit_json(reg_out)
+            print(
+                "Promotion ALLOWED (review required): evidence gates verified at the signed ledger head.",
+                file=sys.stderr,
+            )
+            return EXIT_OK
+
         _emit_json(promo)
         if promo["promoted"]:
             print(
@@ -319,14 +387,17 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
         diff_runs,
         evaluate_promotion,
         export_bundle,
+        generate_audit_report,
         inspect_run,
         list_runs,
         load_keyring,
         run_preflight,
         sign_run,
         validate_dataset,
+        verify_bundle,
     )
     from .task_eval import (
+        compare_task_predictions,
         load_jsonl,
         load_predictor_dataset,
         validate_spec,
@@ -513,6 +584,70 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
             _emit_json(bundle_res)
             return EXIT_OK
 
+        if action == "verify-bundle":
+            verify_res = verify_bundle(args.bundle_path)
+            _emit_json(verify_res)
+            return EXIT_OK
+
+        if action == "report":
+            tenant_ctx = _build_tenant_context(args)
+            keyring = load_keyring(args.keyring) if getattr(args, "keyring", None) else None
+            exp_head = getattr(args, "expected_head", None)
+            exp_count = getattr(args, "expected_count", None)
+            anchor_path = getattr(args, "anchor", None)
+            if anchor_path:
+                anchor_data = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
+                if not isinstance(anchor_data, dict):
+                    raise ValueError("anchor file must contain a JSON object")
+                if exp_head is None:
+                    exp_head = anchor_data.get("head")
+                if exp_count is None:
+                    exp_count = anchor_data.get("count")
+            report_res = generate_audit_report(
+                args.run_id,
+                output_root=args.output_root,
+                keyring=keyring,
+                expected_head=exp_head,
+                expected_count=exp_count,
+                tenant_context=tenant_ctx,
+                fmt=args.format,
+                out_path=args.out,
+            )
+            if args.format == "markdown" and not args.out:
+                print(report_res["markdown"])
+            else:
+                _emit_json(report_res)
+            return EXIT_OK
+
+        if action == "compare":
+            spec_path = Path(args.task_spec).resolve()
+            raw_spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            spec_errors = validate_spec(raw_spec)
+            if spec_errors:
+                raise ValueError(f"invalid task spec: {'; '.join(spec_errors)}")
+            if args.data:
+                data_path = Path(args.data).resolve()
+            else:
+                rel_ds = raw_spec.get("dataset_path")
+                if not isinstance(rel_ds, str) or not rel_ds:
+                    raise ValueError("--data is required when task spec omits dataset_path")
+                data_path = (spec_path.parent / rel_ds).resolve()
+                if not data_path.is_relative_to(spec_path.parent):
+                    raise ValueError("dataset_path escapes task spec directory")
+            dataset_records = load_jsonl(data_path)
+            baseline_preds = load_jsonl(args.baseline_predictions)
+            model_preds = load_jsonl(args.model_predictions)
+            cmp_res = compare_task_predictions(
+                raw_spec,
+                dataset_records,
+                baseline_preds,
+                model_preds,
+                n_bootstrap=args.n_bootstrap,
+                confidence=args.confidence,
+            )
+            _emit_json(cmp_res)
+            return EXIT_OK
+
         if action == "artifact":
             art_action = args.artifact_action
             if art_action == "add":
@@ -610,10 +745,13 @@ def _build_parser() -> _FoundryArgumentParser:
 
     # Registry parser
     registry = sub.add_parser("registry", parents=[common], help="model registry operations (fail-closed)")
-    registry.add_argument("operation", choices=["list", "promote"])
-    registry.add_argument("model_id", nargs="?", default=None, help="optional model or run ID to evaluate for promotion")
+    registry.add_argument("operation", choices=["list", "promote", "register", "get", "verify"])
+    registry.add_argument("model_id", nargs="?", default=None, help="optional model or run ID for promote/register/get")
     registry.add_argument("--output-root", default=None, help="path to runs directory")
+    registry.add_argument("--registry-path", default=None, help="explicit path to registry.json")
     registry.add_argument("--keyring", default=None, help="trusted keyring JSON for signature verification")
+    registry.add_argument("--name", default=None, help="optional model identifier alias when registering")
+    registry.add_argument("--notes", default=None, help="optional registration notes")
     _add_anchor_args(registry)
     _add_tenant_args(registry)
 
@@ -695,6 +833,38 @@ def _build_parser() -> _FoundryArgumentParser:
     bundle_parser.add_argument("--format", choices=["dir", "zip", "tar", "tar.gz", "tgz"], default="dir", help="bundle output format")
     bundle_parser.add_argument("--output-root", default=None, help="path to runs directory")
     _add_tenant_args(bundle_parser)
+
+    verify_bundle_parser = ref_sub.add_parser(
+        "verify-bundle",
+        parents=[common],
+        help="verify an exported SHA-256 verification bundle",
+    )
+    verify_bundle_parser.add_argument("bundle_path", help="bundle directory or archive path")
+
+    report_parser = ref_sub.add_parser(
+        "report",
+        parents=[common],
+        help="generate JSON/Markdown compliance audit report for a run",
+    )
+    report_parser.add_argument("run_id", help="run identifier to report")
+    report_parser.add_argument("--output-root", default=None, help="path to runs directory")
+    report_parser.add_argument("--keyring", default=None, help="trusted keyring JSON for signature verification")
+    report_parser.add_argument("--format", choices=["json", "markdown"], default="json", help="output format")
+    report_parser.add_argument("--out", default=None, help="optional output file path")
+    _add_anchor_args(report_parser)
+    _add_tenant_args(report_parser)
+
+    compare_parser = ref_sub.add_parser(
+        "compare",
+        parents=[common],
+        help="statistically compare baseline vs model predictions on frozen test split",
+    )
+    compare_parser.add_argument("--task-spec", required=True, help="path to task specification JSON")
+    compare_parser.add_argument("--data", default=None, help="optional path to task dataset JSONL")
+    compare_parser.add_argument("--baseline-predictions", required=True, help="path to baseline predictions JSONL")
+    compare_parser.add_argument("--model-predictions", required=True, help="path to model predictions JSONL")
+    compare_parser.add_argument("--n-bootstrap", type=int, default=200, help="bootstrap resamples per seed")
+    compare_parser.add_argument("--confidence", type=float, default=0.95, help="confidence interval level")
 
     art_parser = ref_sub.add_parser("artifact", parents=[common], help="content-addressed artifact store operations")
     art_sub = art_parser.add_subparsers(dest="artifact_action", required=True)

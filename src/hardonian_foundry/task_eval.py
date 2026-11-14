@@ -756,3 +756,70 @@ def load_predictor_dataset(spec: dict[str, Any], base_dir: Path) -> tuple[list[d
     if not resolved.is_relative_to(base_resolved):
         raise ValueError("dataset_path escapes the spec directory")
     return load_jsonl(str(resolved)), resolved
+
+
+def compare_task_predictions(
+    task_spec: dict[str, Any],
+    dataset_records: Sequence[dict[str, Any]],
+    baseline_predictions: Sequence[dict[str, Any]],
+    model_predictions: Sequence[dict[str, Any]],
+    *,
+    n_bootstrap: int = 200,
+    confidence: float = 0.95,
+    seeds: Sequence[int] = (42,),
+) -> dict[str, Any]:
+    """Compare baseline vs. model predictions on the frozen test split with McNemar & bootstrap CIs."""
+    spec_errors = validate_spec(task_spec)
+    if spec_errors:
+        raise ValueError(f"invalid task spec: {'; '.join(spec_errors)}")
+    val_res = validate_task_dataset(dataset_records, task_spec)
+    if val_res["status"] != "VALID":
+        raise ValueError(f"invalid task dataset: {'; '.join(val_res['errors'])}")
+
+    splits = split_task_dataset(dataset_records, task_spec)
+    test_rows = splits["test"]
+    baseline_metrics = score_predictions(test_rows, baseline_predictions, task_spec)
+    model_metrics = score_predictions(test_rows, model_predictions, task_spec)
+    mcnemar = mcnemar_test(test_rows, baseline_predictions, model_predictions)
+    baseline_ci = bootstrap_ci(
+        test_rows,
+        baseline_predictions,
+        task_spec,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seeds=seeds,
+    )
+    model_ci = bootstrap_ci(
+        test_rows,
+        model_predictions,
+        task_spec,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seeds=seeds,
+    )
+    base_macro_f1 = baseline_metrics["macro_f1"]
+    model_macro_f1 = model_metrics["macro_f1"]
+    base_accuracy = baseline_metrics["accuracy"]
+    model_accuracy = model_metrics["accuracy"]
+    if base_macro_f1 is None or model_macro_f1 is None or base_accuracy is None or model_accuracy is None:
+        raise ValueError("cannot compare predictions without finite macro_f1 and accuracy scores")
+
+    macro_f1_delta = round(model_macro_f1 - base_macro_f1, 12)
+    accuracy_delta = round(model_accuracy - base_accuracy, 12)
+    return {
+        "schema_version": "1.0",
+        "task_id": task_spec["task_id"],
+        "split_seed": task_spec.get("split_seed", 42),
+        "test_count": len(test_rows),
+        "dataset_sha256": val_res["dataset_sha256"],
+        "test_sha256": digest(test_rows),
+        "baseline_metrics": baseline_metrics,
+        "model_metrics": model_metrics,
+        "macro_f1_delta": macro_f1_delta,
+        "accuracy_delta": accuracy_delta,
+        "improved_macro_f1": model_macro_f1 > base_macro_f1,
+        "mcnemar": mcnemar,
+        "baseline_ci": baseline_ci,
+        "model_ci": model_ci,
+        "review_required": True,
+    }

@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import tarfile
 import tempfile
@@ -74,18 +75,23 @@ def _scope_ledger_entries(ctx: TenantContext, entries: list[dict[str, Any]]) -> 
     ]
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Atomically write UTF-8 text to disk via mkstemp + fsync + replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".foundry-json-", dir=str(path.parent), text=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".foundry-out-", dir=str(path.parent), text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    _write_text_atomic(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def evaluate_dataset(
@@ -934,3 +940,138 @@ def verify_bundle(bundle_path: str | Path) -> dict[str, Any]:
         "count": report["count"],
         "file_count": len(manifest.get("files", [])),
     }
+
+
+def _render_audit_markdown(report: dict[str, Any]) -> str:
+    """Render a deterministic human-review Markdown summary from a structured audit report."""
+    eval_sum = report.get("evaluation_summary") or {}
+    lines = [
+        f"# Foundry Promotion & Provenance Audit Report: `{report['run_id']}`",
+        "",
+        f"- **Decision Status:** `{report['status']}` (`promoted={report['promoted']}`)",
+        f"- **Mandatory Human Review:** `review_required={report['review_required']}`",
+        f"- **Provenance Status:** `{report['provenance_status']}`",
+        f"- **Anchor Verified:** `{report['anchor_verified']}`",
+        f"- **Ledger Head:** `{report.get('ledger_head') or 'N/A'}` (entries: `{report.get('ledger_count')}`)",
+        f"- **Dataset SHA-256:** `{report.get('dataset_sha256') or 'N/A'}`",
+        f"- **Test Split SHA-256:** `{report.get('test_sha256') or 'N/A'}`",
+        "",
+        "## Evaluation Summary",
+        "",
+        f"- **Mode:** `{eval_sum.get('mode')}` (`data_origin={eval_sum.get('data_origin')}`)",
+        f"- **Macro-F1 / F1:** `{eval_sum.get('f1')}`",
+        f"- **Critical False Negative Rate:** `{eval_sum.get('critical_false_negative_rate')}`",
+        f"- **Test Count:** `{eval_sum.get('test_count')}`",
+        f"- **Review Rate:** `{eval_sum.get('review_rate')}`",
+        "",
+        "## Gate Verification Details",
+        "",
+    ]
+    missing = report.get("missing_evidence") or []
+    if missing:
+        lines.append("### Missing or Blocked Evidence")
+        for item in missing:
+            lines.append(f"- `{item}`")
+        lines.append("")
+    reasons = report.get("reasons") or []
+    if reasons:
+        lines.append("### Failure Reasons")
+        for reason in reasons:
+            lines.append(f"- {reason}")
+        lines.append("")
+    gates = report.get("gates") or {}
+    lines.append("### Evidence Summary")
+    for k in sorted(gates):
+        lines.append(f"- **{k}:** `{gates[k]}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generate_audit_report(
+    run_id: str,
+    *,
+    output_root: str | Path | None = None,
+    keyring: Any = None,
+    expected_head: str | None = None,
+    expected_count: int | None = None,
+    tenant_context: TenantContext | None = None,
+    fmt: str = "json",
+    out_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Generate a deterministic JSON and Markdown compliance audit report for a tracked run."""
+    if fmt not in ("json", "markdown"):
+        raise ValueError(f"unsupported report format {fmt!r}; expected 'json' or 'markdown'")
+    if tenant_context is not None and not isinstance(tenant_context, TenantContext):
+        raise ValueError("tenant_context must be a TenantContext instance")
+
+    from .refinery_gates import evaluate_promotion
+
+    insp = inspect_run(
+        run_id,
+        output_root=output_root,
+        expected_head=expected_head,
+        expected_count=expected_count,
+        tenant_context=tenant_context,
+        _include_snapshot=True,
+    )
+    promo = evaluate_promotion(
+        run_id,
+        output_root=output_root,
+        keyring=keyring,
+        expected_head=expected_head,
+        expected_count=expected_count,
+        tenant_context=tenant_context,
+    )
+
+    raw_rec = insp.get("run_record")
+    run_record: dict[str, Any] = raw_rec if isinstance(raw_rec, dict) else {}
+    raw_report = insp.get("ledger_report")
+    ledger_report: dict[str, Any] = raw_report if isinstance(raw_report, dict) else {}
+    raw_eval = insp.get("evaluation")
+    eval_obj: dict[str, Any] = raw_eval if isinstance(raw_eval, dict) else {}
+
+    eval_summary: dict[str, Any] = {
+        "mode": eval_obj.get("mode"),
+        "data_origin": eval_obj.get("data_origin"),
+        "task_id": eval_obj.get("task_id"),
+        "test_count": eval_obj.get("test_count"),
+        "f1": eval_obj.get("f1"),
+        "critical_false_negative_rate": eval_obj.get("critical_false_negative_rate"),
+        "review_rate": eval_obj.get("review_rate"),
+        "coverage_automatic_decision": eval_obj.get("coverage_automatic_decision"),
+        "latency_p95_ms": eval_obj.get("latency_p95_ms"),
+    }
+
+    report: dict[str, Any] = {
+        "schema_version": "1.0",
+        "run_id": insp["run_id"],
+        "status": promo["status"],
+        "promoted": promo["promoted"],
+        "review_required": True,
+        "provenance_status": insp["provenance_status"],
+        "anchor_verified": bool(insp.get("anchor_verified", insp["provenance_status"] == "PROVENANCE_VERIFIED")),
+        "dataset_sha256": insp.get("dataset_sha256"),
+        "test_sha256": run_record.get("test_sha256"),
+        "ledger_head": ledger_report.get("head"),
+        "ledger_count": ledger_report.get("count"),
+        "gates": promo["evidence_summary"],
+        "missing_evidence": promo["missing_evidence"],
+        "reasons": promo["reasons"],
+        "evaluation_summary": eval_summary,
+    }
+    report["markdown"] = _render_audit_markdown(report)
+
+    if out_path is not None:
+        raw_out = str(out_path)
+        if not raw_out or any(ord(ch) < 32 for ch in raw_out):
+            raise ValueError("out_path must be a clean non-empty path")
+        if any(part == ".." for part in re.split(r"[/\\]", raw_out)):
+            raise ValueError("out_path contains path traversal")
+        dest = Path(out_path).resolve()
+        if fmt == "markdown":
+            _write_text_atomic(dest, str(report["markdown"]))
+        else:
+            _write_json_atomic(dest, report)
+        report["saved_path"] = str(dest)
+
+    return report

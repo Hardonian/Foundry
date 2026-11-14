@@ -93,7 +93,7 @@ def discover_version() -> str:
             match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
             if match:
                 return match.group(1)
-        return "0.3.0"
+        return "1.0.0"
 
 
 def discover_test_count() -> int:

@@ -93,15 +93,17 @@ foundry refinery list --output-root .foundry/runs [--status <status>] [--task-id
 foundry refinery diff <run_a> <run_b> --output-root .foundry/runs
 ```
 
-### 5. External Anchoring & Bundle Export (`anchor`, `export-bundle`)
-Because a local append-only ledger cannot by itself detect an attacker rolling back the entire directory to an earlier signed snapshot, Foundry provides external head anchoring and portable bundle export:
+### 5. External Anchoring, Bundle Verification & Audit Reports (`anchor`, `export-bundle`, `verify-bundle`, `report`)
+Because a local append-only ledger cannot by itself detect an attacker rolling back the entire directory to an earlier signed snapshot, Foundry provides external head anchoring, portable bundle export/verification, and deterministic audit reports:
 
 ```sh
 foundry refinery anchor [run_id] --output-root .foundry/runs [--out anchor.json]
 foundry refinery export-bundle <run_id> --output-root .foundry/runs --out bundle.tar.gz [--format dir|zip|tar|tar.gz|tgz]
+foundry refinery verify-bundle <bundle_path>
+foundry refinery report <run_id> --output-root .foundry/runs [--keyring keyring.json] [--format json|markdown] [--out report.md]
 ```
 
-Pass the recorded anchor digest to `inspect`, `promote`, or `registry promote` via `--expected-head <hex>` (and `--expected-count <n>`) or `--anchor <anchor.json>` to fail closed on rollback.
+Pass the recorded anchor digest to `inspect`, `promote`, `report`, or `registry promote` via `--expected-head <hex>` (and `--expected-count <n>`) or `--anchor <anchor.json>` to fail closed on rollback.
 
 ### 6. Content-Addressed Artifacts (`artifact`)
 Manages local content-addressed artifacts with SHA-256 verification:
@@ -140,22 +142,29 @@ foundry refinery attach-license <run_id> --manifest manifest.json --output-root 
 foundry refinery sign <run_id> --key-file sign.pem --output-root .foundry/runs
 ```
 
-### 9. Task-Mode Evaluation (`task_eval.py`)
+### 9. Task-Mode Evaluation & Paired Comparison (`task_eval.py`, `compare`)
 Task mode scores externally produced predictions against a frozen task contract (`spec.json`) without executing models inside Foundry:
 - **Spec:** `task_id`, `labels`, `thresholds` (`macro_f1_min >= 0.8` plus optional `critical_fn_rate_max`, `per_class_recall_min`, `invalid_output_rate_max`, `latency_p95_ms_max`), `baseline_must_improve`, `split_seed`, `model` (`base_model_id`, `revision`, `adapter_sha256`, `adapter_name`), and relative `dataset_path`.
 - **Dataset (JSONL):** `{"id", "prompt", "gold_label", "critical", "family"?}` with deterministic group-disjoint ~60/15/25 splits.
 - **Predictions (JSONL):** `{"id", "label"}` (with optional `"confidence"`, `"latency_ms"`, `"abstained"`, `"raw_invalid"`) with exact test-ID coverage.
-- **Metrics:** Single-pass `O(|T|)` scoring emitting per-class P/R/F1, `macro_f1`, `accuracy`, `confusion_matrix`, `critical_false_negative_rate` (`null` when `critical_total == 0`, blocking promotion), and optional calibration/abstention metrics.
+- **Metrics & Statistical Comparison:** Single-pass `O(|T|)` scoring emitting per-class P/R/F1, `macro_f1`, `accuracy`, `confusion_matrix`, `critical_false_negative_rate` (`null` when `critical_total == 0`, blocking promotion), and optional calibration/abstention metrics. `refinery compare` runs paired McNemar tests and multi-seed bootstrap CIs between baseline and candidate predictions:
+
+```sh
+foundry refinery compare --task-spec spec.json [--data dataset.jsonl] --baseline-predictions baseline.jsonl --model-predictions model.jsonl [--n-bootstrap 200] [--confidence 0.95]
+```
 
 ### 10. Opt-in Provider Adapter (`provider`, `provider predict`)
 - **`foundry provider --origin <url> --model <id>`:** Single-record loopback probe (`probe`) with redirects/proxies disabled, response byte cap, circuit breaker, and strict total deadline.
 - **`foundry provider predict ...`:** Batch prediction generator writing `{id, label}` JSONL with fail-closed `--fallback-label UNDETERMINED` / `UNAVAILABLE` handling (never substituting heuristics on provider errors). Supports `--task-spec`, `--data`, `--labels`, `--split`, `--out`, `--failure-threshold`, plus opt-in `--allow-tls`, `--allow-remote`, `--ca-bundle`, and `--auth-token-env`.
 
-### 11. Registry Gate (`registry list`, `registry promote`)
-Manages registered model candidates backed by verified refinery evidence:
+### 11. Fail-Closed Model Registry (`registry list`, `promote`, `register`, `get`, `verify`)
+Manages registered model candidates backed by verified refinery evidence in an atomic SHA-256-checksummed `registry.json`:
 
 ```sh
-foundry registry list --output-root .foundry/runs
+foundry registry list --output-root .foundry/runs [--registry-path registry.json] [--tenant-id <id>]
+foundry registry register <run_id> --output-root .foundry/runs --keyring keyring.json [--name <model_id>] [--notes "..."] [--registry-path registry.json]
+foundry registry get <model_id> --output-root .foundry/runs [--registry-path registry.json] [--tenant-id <id>]
+foundry registry verify --output-root .foundry/runs [--keyring keyring.json] [--registry-path registry.json]
 foundry registry promote [model_id] --output-root .foundry/runs --keyring keyring.json [--expected-head <hex>] [--expected-count <n>] [--tenant-id <id>] [--request-id <id>]
 ```
 
@@ -165,12 +174,12 @@ foundry registry promote [model_id] --output-root .foundry/runs --keyring keyrin
 
 | Command / Outcome | Exit Code | Meaning |
 |---|---:|---|
-| Success (`doctor`, `demo`, `run`, `inspect` verified, `promote` `ALLOWED_REVIEW_REQUIRED`, `validate-dataset` `VALID`, `preflight` `PASSED`, `attach-license` `ALLOWED`, `sign`, `keygen`, `anchor`, `export-bundle`) | `0` | Completed and verified |
+| Success (`doctor`, `demo`, `run`, `inspect` verified, `promote` `ALLOWED_REVIEW_REQUIRED`, `validate-dataset` `VALID`, `preflight` `PASSED`, `attach-license` `ALLOWED`, `sign`, `keygen`, `anchor`, `export-bundle`, `verify-bundle`, `report`, `compare`, `registry list/register/get/verify`) | `0` | Completed and verified |
 | Validation / Preflight / Inspection / Provider Unavailable failure | `1` | Invalid dataset, failed preflight, tampered ledger, or provider `UNAVAILABLE` |
-| Fail-closed Gate / Configuration / CLI Input Error (`promote` `BLOCKED`, `registry promote`, invalid args, traversal/missing files, failed anchor/quorum) | `2` | Promotion blocked or fail-closed safety/input error |
+| Fail-closed Gate / Configuration / CLI Input Error (`promote` `BLOCKED`, `registry promote/register/verify` failure, `verify-bundle` failure, invalid args, traversal/missing files, failed anchor/quorum) | `2` | Promotion blocked or fail-closed safety/input error |
 
 Global CLI utilities:
-- `foundry --version` — print package version
+- `foundry --version` (or `python -m hardonian_foundry --version`) — print package version
 - `foundry --json-errors ...` — emit structured JSON error objects on stderr
 - `foundry doctor [--verbose]` — offline runtime and optional-extra diagnostics (`signing`, `train` availability)
 
@@ -181,15 +190,12 @@ Global CLI utilities:
 - **File Locking:** `evidence.py` uses `fcntl.flock` on Linux/macOS and bounded retry/backoff over `msvcrt.LK_NBLCK` on Windows.
 - **Key & Directory Permissions:** On POSIX (`os.name == "posix"`), private keys require strict `0600` mode (`st_mode & 0o077 == 0`) and run directories use `0700`. On Windows (`os.name == "nt"`), `generate_keypair()` applies a protected owner-only DACL (owner + `SYSTEM` + `Administrators` via `SetNamedSecurityInfoW`), and `GetNamedSecurityInfoW` rejects NULL DACLs or inherited broad SIDs (`Everyone`, `BUILTIN\Users`) without breaking temporary-directory workflows.
 - **Portable Ledgers:** Cloned runs such as `examples/case-study-exception-codes/task/runs/run-20261111T031107Z-6a0895d1` verify cleanly across Windows, macOS, and Linux because `inspect` resolves `root_dir / "evidence.jsonl"` safely without modifying committed signed evidence.
-- **Path Traversal Prevention:** `task_eval.validate_spec` and `refinery` reject `/`, `\`, `..`, and Windows drive letters (`C:`) in `run_id` and `dataset_path`.
+- **Path Traversal Prevention:** `task_eval.validate_spec`, `registry.resolve_registry_path`, and `refinery` reject `/`, `\`, `..`, and Windows drive letters (`C:`) in `run_id`, `dataset_path`, and output paths.
 
 ---
 
-## Remaining Gaps and Future Work
+## Remaining Gaps and Long-Term Roadmap
 
-Completed in `0.3.0`: external head anchoring (`anchor`, `--expected-head`), M-of-N keyring quorum & revocation, SQLite WAL evidence store, content-addressed local artifact store (`artifact.py`), `list`/`diff`/`export-bundle` commands, cross-platform Windows/macOS/Linux support, and three end-to-end synthetic case studies.
+Completed through `1.0.0`: PEP 561 typed public Python SDK & `python -m hardonian_foundry`, persistent SHA-256 model registry (`registry.py`), statistical model comparison (`compare`), JSON/Markdown compliance audit reports (`report`), `verify-bundle` CLI, external head anchoring (`anchor`, `--expected-head`), M-of-N keyring quorum & revocation, SQLite WAL evidence store, content-addressed local artifact store (`artifact.py`), `list`/`diff`/`export-bundle` commands, cross-platform Windows/macOS/Linux support, and three end-to-end synthetic case studies.
 
-Remaining production gaps:
-- **Remote KMS / HSM & Immutable Audit Service:** File-based PEM keys and local anchors rely on operator custody; production requires KMS/HSM signing and write-once remote anchoring.
-- **Live Inference Serving:** Foundry gates evaluation evidence; production routing remains separate (`model-tools`).
-- **Consented Pilot Calibration:** Real-world pilot accuracy requires multi-rater human calibration on consented, redacted records per [docs/dataset-card.md](dataset-card.md).
+For Horizon 2 (`v1.1–v1.2`: KMS/HSM/Sigstore `SignerProvider`, RFC 3161/WORM `AnchorSink`, SLSA/build attestations), Horizon 3 (`v1.3–v1.5`: multi-turn agentic trajectory gates, rolling calibration & dual-rater kappa monitors, signed consent/redaction automation), and Horizon 4 (`v2.0`: federated cross-org threshold keyrings & `Settler`/`SAT-Frontier` proofpacks), see [docs/roadmap.md](roadmap.md).

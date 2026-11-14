@@ -30,14 +30,16 @@ flowchart LR
         BASE["baseline.py & synthetic_policy.py"]
     end
 
-    subgraph Refinery["Refinery Orchestration"]
-        TE["task_eval.py"]
+    subgraph Refinery["Refinery Orchestration & Registry"]
+        TE["task_eval.py (scoring + compare_task_predictions)"]
         ART["artifact.py"]
         REF["refinery.py facade -> refinery_{validation,preflight,runs,gates,attestation}.py"]
+        REG["registry.py (SHA-256 registry.json)"]
     end
 
-    subgraph Interfaces["Interfaces"]
-        CLI["cli.py (foundry)"]
+    subgraph Interfaces["Interfaces & SDK"]
+        SDK["__init__.py (__all__) / __main__.py / py.typed"]
+        CLI["cli.py (foundry / python -m hardonian_foundry)"]
         PROV["provider.py (loopback adapter)"]
     end
 
@@ -51,9 +53,12 @@ flowchart LR
     CAN --> EV --> REF
     TEN --> REF
     ART --> REF
+    REF --> REG
     BASE --> CLI
     PROV --> CLI
     REF --> CLI
+    REG --> CLI
+    SDK --> CLI
 ```
 
 ---
@@ -111,12 +116,14 @@ sequenceDiagram
 | `tenancy.py` | `TenantContext` validation, `authorize_run`, and `scope_ledger_query` fail-closed isolation helpers | Production identity/SSO authentication |
 | `baseline.py` | Deterministic integer minor-unit reconciliation baseline, allowlist tool verifier (`verify_trace`), 22-case `evaluate_agents()`, synthetic dataset/split/eval | Trained ML inference or autonomous writes |
 | `synthetic_policy.py` | Deterministic integer arithmetic gate (`assess`, `assess_with_suggestion`) backed by `canonical.digest` that untrusted model suggestions cannot override | Financial writes or execution |
-| `task_eval.py` | Frozen task-spec validation (`validate_spec`), traversal-free path checks, group-disjoint splits, single-pass `score_predictions`, confusion matrix, per-family breakdown, calibration/bootstrap/McNemar | Running external models directly |
+| `task_eval.py` | Frozen task-spec validation (`validate_spec`), traversal-free path checks, group-disjoint splits, single-pass `score_predictions`, confusion matrix, per-family breakdown, calibration/bootstrap/McNemar, paired `compare_task_predictions` | Running external models directly |
 | `artifact.py` | Content-addressed local artifact store (`add_artifact`, `verify_artifact`, `get_artifact_path`, `list_artifacts`, `sha256_file`) | Remote model registry or cloud object storage |
-| `refinery.py` + `refinery_*.py` | Modular orchestration (`types.py`, `validation`, `preflight`, `runs`, `gates`, `attestation`) behind `refinery` facade (`_code_digest` across package `.py`, `secrets.token_hex(6)`, `verify_bundle`) | Auto-deploying models without human sign-off |
+| `registry.py` | Fail-closed persistent SHA-256 model registry (`resolve_registry_path`, `register_model`, `list_models`, `get_model`, `verify_registry`) over atomic `registry.json` snapshots | Auto-promotion without human sign-off or remote registry sync |
+| `refinery.py` + `refinery_*.py` | Modular orchestration (`types.py`, `validation`, `preflight`, `runs`, `gates`, `attestation`) behind `refinery` facade (`_code_digest` across package `.py`, `secrets.token_hex(6)`, `verify_bundle`, `generate_audit_report`) | Auto-deploying models without human sign-off |
 | `provider.py` | Opt-in loopback HTTP adapter (`probe`, `predict`, `suggest`, `predict_batch`, `_DeadlineGuard`, `CircuitBreaker`, `audit_sha256`, `latency_ms`) with `UNAVAILABLE` fail-closed fallback | Heuristic substitution on provider error |
 | `training_utils.py` | Shared offline preflight (`verify_private_dir`, `available_ram_bytes`, `acquire_training_lock`), pinned snapshot/Git-blob verification, `auto_map` rejection, `model_registry`, padded micro-batching, `LabelPrefixTrie`, training adapter hooks | Hub downloading or production serving |
-| `cli.py` | `foundry` entrypoint, structured exit codes (`0`/`1`/`2`), `--json-errors`, subcommands for `refinery`, `provider`, `registry`, `doctor`, `demo`, `eval`, `policy-demo` | Silent fallback on invalid inputs |
+| `__init__.py` + `__main__.py` + `py.typed` | Typed (`py.typed` PEP 561) public Python SDK (`__all__`) without eager `[signing]`/`[train]` imports, plus `python -m hardonian_foundry` entrypoint | Eager optional-extra loading or stateful singletons |
+| `cli.py` | `foundry` / `python -m hardonian_foundry` entrypoint, structured exit codes (`0`/`1`/`2`), `--json-errors`, subcommands for `refinery` (`verify-bundle`, `report`, `compare`, ...), `provider`, `registry` (`list`, `promote`, `register`, `get`, `verify`), `doctor`, `demo`, `eval`, `policy-demo` | Silent fallback on invalid inputs |
 
 ---
 
@@ -156,3 +163,4 @@ sequenceDiagram
 
 - **Settler & SAT-Frontier:** External repositories remain uncoupled; preserving Settler's deterministic minor-unit reconciliation, tenant authorization, proofpacks, and mandatory manual review is required before any integration.
 - **Inference Serving:** Foundry provides an evaluation and promotion gate, not a production serving gateway (`model-tools` remains separate).
+- **Long-Term Evolution:** Planned Horizons 2–4 (KMS/HSM/Sigstore `SignerProvider`, RFC 3161/WORM `AnchorSink`, multi-turn agentic trajectory gates, calibration/drift monitors, and federated cross-org proofpack contracts) are tracked in [docs/roadmap.md](roadmap.md).

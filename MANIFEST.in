@@ -1,4 +1,6 @@
 include CHANGELOG.md CONTRIBUTING.md LICENSE README.md SECURITY.md
+include src/hardonian_foundry/py.typed
 recursive-include docs *.md *.cast *.gif *.png
+recursive-include evals *.py *.yaml *.md
 recursive-include scripts *.py
 recursive-include examples *.py *.md *.sh

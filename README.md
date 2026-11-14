@@ -36,10 +36,11 @@ Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos
 | `foundry refinery keygen --out <pem>` | Generate an Ed25519 private key (mode `0600` on POSIX, owner-restricted on Windows) |
 | `foundry refinery sign <run_id>` | Verify `run.json` against seq-1 digest and append `v2` Ed25519 signature |
 | `foundry refinery list` / `diff` | List tracked runs and diff metrics/provenance between runs |
-| `foundry refinery anchor` / `export-bundle` | Emit external head checkpoint and portable SHA-256-verified evidence bundles |
+| `foundry refinery anchor` / `export-bundle` / `verify-bundle` | Emit external head checkpoints and export/verify SHA-256 evidence bundles |
+| `foundry refinery report` / `compare` | Render JSON/Markdown compliance audit reports and McNemar + bootstrap model comparisons |
 | `foundry refinery artifact {add,verify,list}` | Local content-addressed artifact store with SHA-256 verification |
 | `foundry provider` / `provider predict` | Opt-in loopback provider probe & batch JSONL predictions (fails closed to `UNAVAILABLE`) |
-| `foundry registry {list,promote}` | Fail-closed registry gate requiring `--keyring` and verified run evidence |
+| `foundry registry {list,promote,register,get,verify}` | Fail-closed SHA-256 model registry & promotion gate requiring `--keyring` and verified evidence |
 
 ## Quick start
 
@@ -51,7 +52,16 @@ python3 -m venv .venv && .venv/bin/pip install ".[signing]"
 .venv/bin/foundry refinery promote <run_id> --output-root .foundry/runs   # exits 2, by design
 ```
 
-Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry.cli <command>` (or `$env:PYTHONPATH="src"` on Windows PowerShell).
+Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry <command>` (or `$env:PYTHONPATH="src"` on Windows PowerShell).
+
+Python SDK (`import hardonian_foundry`):
+
+```python
+import hardonian_foundry as hf
+
+res = hf.evaluate_promotion("<run_id>", output_root=".foundry/runs", keyring="keyring.json")
+report = hf.generate_audit_report("<run_id>", output_root=".foundry/runs", fmt="markdown")
+```
 
 Optional extras in [pyproject.toml](pyproject.toml):
 - `.[signing]` — Ed25519 signing/verification (`cryptography`)
@@ -82,14 +92,15 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote run-20261111T03
 | [docs/refinery.md](docs/refinery.md) | Full refinery CLI reference, gate semantics, exit codes, anchoring, Windows/POSIX behavior |
 | [docs/training.md](docs/training.md) | Cross-platform preflight, batched CPU LoRA training/eval, model registry config, DPO/RLVR/GPU adapter contracts |
 | [docs/dataset-card.md](docs/dataset-card.md) | Dataset taxonomies, spurious-shortcut warnings, and consented pilot migration checklist |
+| [docs/roadmap.md](docs/roadmap.md) | Long-term product roadmap (`v1.0.0` shipped through `v2.0` KMS/WORM/agentic/federated proofpacks) |
 
-## Honest status
+## Honest Status & Long-Term Roadmap (v1.0.0)
 
 Read this before building on Foundry:
 
 - **Synthetic-first baseline:** Built-in fixtures and case studies use **synthetic data only**. Optional `consented_pilot` / `redacted_eval` tiers in `licensing.py` and `evidence.py` require explicit `governance_attestation` and remain disallowed by default.
 - **Human review is mandatory:** `ALLOWED_REVIEW_REQUIRED` certifies evidence completeness at a verified ledger head—never production accuracy or unattended deployment readiness (`review_rate = 1.0`, `financial_write = false`, `executed = false`).
-- **No production serving or remote KMS/HSM:** Foundry is an evaluation and promotion gate, not a production inference gateway, IAM/SSO service, or remote immutable HSM audit service.
+- **No production serving or remote KMS/HSM in v1.0:** Foundry is an offline-first evaluation, local SHA-256 registry, and promotion gate, not a production inference gateway, IAM/SSO service, or remote immutable HSM audit service. Pluggable KMS/HSM/Sigstore signing, RFC 3161/WORM anchoring, agentic trajectory gates, and federated proofpacks are tracked in [docs/roadmap.md](docs/roadmap.md).
 - **Loopback provider guard:** The opt-in `provider` adapter defaults to operator-approved loopback origins (optional TLS/bearer env auth requires explicit opt-in), disables redirects/proxies, enforces timeouts/circuit breakers, and never substitutes heuristics on failure (`UNAVAILABLE`).
 - **Synthetic self-consistency is not pilot accuracy:** High synthetic scores (such as `1.000` on closed-vocabulary templates) demonstrate structural gate behavior, not real-world generalization. See [docs/dataset-card.md](docs/dataset-card.md).
 

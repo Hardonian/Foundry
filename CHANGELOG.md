@@ -3,6 +3,26 @@
 All notable changes to Foundry are documented here. The format is loosely
 based on Keep a Changelog; this project uses Semantic Versioning.
 
+## [1.0.0] - 2026-11-14
+
+### Added
+- **Productized Public Python SDK & Packaging (`v1.0.0`):**
+  - Exported a cohesive public SDK via `hardonian_foundry.__all__` (`artifact`, `canonical`, `evidence`, `provider`, `refinery`, `registry`, `task_eval`, `tenancy`) while preserving zero-extra imports without `[signing]` or `[train]` installed.
+  - Added PEP 561 `py.typed` marker (`package-data` + `MANIFEST.in`), `python -m hardonian_foundry` entrypoint (`__main__.py`), and PEP 621 `keywords`, `classifiers`, and `[project.urls]` metadata in `pyproject.toml`.
+- **Persistent Fail-Closed Model Registry (`registry.py`):**
+  - Added `resolve_registry_path`, `register_model`, `list_models`, `get_model`, and `verify_registry` backed by atomic SHA-256-checksummed `registry.json` snapshots (`registry_sha256`), tenant isolation (`TenantContext`), and fail-closed `evaluate_promotion` + `inspect_run` verification.
+  - Expanded CLI `foundry registry` with `register`, `get`, and `verify` operations (`--registry-path`, `--name`, `--notes`) and persisted `registry promote` approvals into `registry.json` when an explicit storage target is configured.
+- **Statistical Comparison, Audit Reports & Bundle Verification:**
+  - Added `compare_task_predictions` (`task_eval.py`) and CLI `foundry refinery compare` running paired McNemar tests and multi-seed bootstrap confidence intervals on the frozen test split.
+  - Added `generate_audit_report` (`refinery_runs.py`) and CLI `foundry refinery report` rendering deterministic JSON and Markdown human-review compliance audit reports (`--format json|markdown`, `--out`).
+  - Added CLI `foundry refinery verify-bundle` for standalone SHA-256 manifest + ledger chain verification of exported `dir`, `zip`, `tar`, and `tar.gz`/`tgz` bundles.
+- **Long-Term Roadmap (`docs/roadmap.md`):**
+  - Documented Horizon 1 (`v1.0.0` shipped) through Horizon 4 (`v2.0`: KMS/HSM/Sigstore `SignerProvider`, RFC 3161/WORM `AnchorSink`, multi-turn agentic trajectory gates, calibration/kappa drift monitoring, and federated cross-org proofpack interop).
+
+### Changed
+- Bumped package version to `1.0.0` in `pyproject.toml`, `src/hardonian_foundry/__init__.py`, and `scripts/make_social_preview.py`.
+- Updated `README.md`, `docs/architecture.md`, and `docs/refinery.md` to reflect `1.0.0` CLI/SDK contracts and link `docs/roadmap.md`.
+
 ## [0.3.0] - 2026-11-12
 
 Cross-platform Windows/macOS/Linux hardening, modular Refinery architecture,
