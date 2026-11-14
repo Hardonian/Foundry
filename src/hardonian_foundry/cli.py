@@ -41,8 +41,23 @@ def _load_json_file(path_str: str, description: str) -> Any:
         raise ValueError(f"invalid JSON in {description} file {path_str}: {exc}") from exc
 
 
+def _sanitize_for_json_output(value: Any) -> Any:
+    sensitive_fields = {"trusted_keys", "public_key_hex", "signature_hex"}
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in sensitive_fields:
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = _sanitize_for_json_output(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_for_json_output(item) for item in value]
+    return value
+
+
 def _emit_json(payload: Any) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(_sanitize_for_json_output(payload), indent=2, sort_keys=True))
 
 
 def _emit_error(message: str, *, exc: BaseException | None = None, json_errors: bool, exit_code: int) -> int:
