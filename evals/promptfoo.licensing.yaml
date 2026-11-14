@@ -1,0 +1,247 @@
+description: Foundry licensing gate red-team - fail-closed SPDX allowlist (deterministic, no model)
+providers:
+  - id: file://license_gate_provider.py
+    label: foundry-licensing-gate
+prompts:
+  - "{{payload}}"
+tests:
+  # allow_mit
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_apache
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"Apache-2.0","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_bsd3
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"BSD-3-Clause","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_cc0
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"CC0-1.0","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_ofl
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"OFL-1.1","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_full
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"Apache-2.0","provenance":"synthetic","data_origin":"synthetic","weights_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source_url":"https://example.com/m","notes":"ok"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_public_research_provenance
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"public_research","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # allow_url_loopback
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"http://127.0.0.1:8080"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # deny_proprietary
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"Proprietary","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_agpl
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"AGPL-3.0-only","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_gpl
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"GPL-3.0-only","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_compound
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"Apache-2.0 OR Proprietary","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_lowercase
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"apache-2.0","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_padded
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":" Apache-2.0 ","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_newline
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT\n","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_empty_license
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_missing_license
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_nonstring_license
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":123,"provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_sspl
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"SSPL-1.0","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_busl
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"BUSL-1.1","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_elv2
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"Elastic-2.0","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_openrail
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"OpenRAIL-M","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_origin_public_research
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"public_research"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_origin_consented_default
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"consented_pilot"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_origin_scraped
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"scraped"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_url_http_remote
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"http://evil.example.com"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_url_javascript
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"javascript:alert(1)"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_url_creds
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"https://user:pass@host.example"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_url_localhost
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"http://localhost:8080"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_url_ftp
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","source_url":"ftp://host.example"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_weights_short
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","weights_sha256":"abc123"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_weights_upper
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","weights_sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_unknown_field
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic","extra":"x"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_empty_name
+  - vars:
+      payload: '{"manifest":{"name":"","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_padded_name
+  - vars:
+      payload: '{"manifest":{"name":" demo ","license_id":"MIT","provenance":"synthetic","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_manifest_not_dict
+  - vars:
+      payload: '{"manifest":"not-a-dict"}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_missing_provenance
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","data_origin":"synthetic"}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # deny_consented_no_attestation
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"consented_pilot","data_origin":"consented_pilot"},"opts":{"allowed_data_origins":["consented_pilot"]}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
+  # allow_consented_valid
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"consented_pilot","data_origin":"consented_pilot","governance_attestation":{"tier":"consented_pilot","attestation_id":"a1","approved_by":"scott","approved_at":"2026-11-13"}},"opts":{"allowed_data_origins":["consented_pilot"]}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'ALLOWED' && JSON.parse(output).promotion_allowed === false"
+  # deny_redacted_not_redacted
+  - vars:
+      payload: '{"manifest":{"name":"demo-model","license_id":"MIT","provenance":"redacted_eval","data_origin":"redacted_eval","governance_attestation":{"tier":"redacted_eval","attestation_id":"a2","approved_by":"scott","approved_at":"2026-11-13","redacted":false}},"opts":{"allowed_data_origins":["redacted_eval"]}}'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).decision === 'DENIED' && JSON.parse(output).promotion_allowed === false"
