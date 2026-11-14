@@ -42,7 +42,15 @@ def _load_json_file(path_str: str, description: str) -> Any:
 
 
 def _sanitize_for_json_output(value: Any) -> Any:
-    sensitive_fields = {"trusted_keys", "public_key_hex", "signature_hex"}
+    # Redact only genuinely secret material. public_key_hex / signature_hex /
+    # trusted_keys are PUBLIC verification artifacts, not secrets: keygen emits
+    # public_key_hex so callers can build a keyring, and promote verifies against
+    # it. Redacting them broke keygen -> keyring -> promote (rc=2). Private keys
+    # are written to mode-0600 PEM files and never emitted as JSON.
+    sensitive_fields = {
+        "private_key", "private_key_hex", "private_key_pem", "private_bytes",
+        "secret", "secret_key", "password", "token", "api_key",
+    }
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
