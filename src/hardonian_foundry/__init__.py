@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from .artifact import (
     add_artifact,
+    create_build_attestation,
     get_artifact_path,
     list_artifacts,
     verify_artifact,
+    verify_build_attestation,
 )
 from .canonical import canonical, digest
 from .evidence import JsonlEvidenceStore, SQLiteEvidenceStore
+from .proofpack import build_proofpack, verify_proofpack
 from .provider import (
     CircuitBreaker,
     ProviderError,
@@ -16,6 +19,8 @@ from .provider import (
     suggest,
 )
 from .refinery import (
+    AnchorSink,
+    WormDirectoryAnchorSink,
     anchor_run,
     attach_license,
     create_run,
@@ -39,12 +44,21 @@ from .registry import (
     register_model,
     verify_registry,
 )
+from .signing import (
+    CallbackSignerProvider,
+    LocalPemSignerProvider,
+    SignerProvider,
+)
 from .task_eval import (
     bootstrap_ci,
+    cohens_kappa,
     compare_task_predictions,
+    evaluate_trajectories,
+    fleiss_kappa,
     load_jsonl,
     load_predictor_dataset,
     mcnemar_test,
+    scan_dataset_pii,
     score_predictions,
     split_task_dataset,
     validate_spec,
@@ -55,24 +69,34 @@ from .tenancy import TenantContext
 __version__ = "1.0.0"
 
 __all__ = [
+    "AnchorSink",
+    "CallbackSignerProvider",
     "CircuitBreaker",
     "JsonlEvidenceStore",
+    "LocalPemSignerProvider",
     "ProviderError",
     "SQLiteEvidenceStore",
+    "SignerProvider",
     "TenantContext",
+    "WormDirectoryAnchorSink",
     "__version__",
     "add_artifact",
     "anchor_run",
     "attach_license",
     "bootstrap_ci",
+    "build_proofpack",
     "canonical",
+    "cohens_kappa",
     "compare_task_predictions",
+    "create_build_attestation",
     "create_run",
     "create_task_run",
     "diff_runs",
     "digest",
     "evaluate_promotion",
+    "evaluate_trajectories",
     "export_bundle",
+    "fleiss_kappa",
     "generate_audit_report",
     "get_artifact_path",
     "get_model",
@@ -88,6 +112,7 @@ __all__ = [
     "predict_batch",
     "register_model",
     "run_preflight",
+    "scan_dataset_pii",
     "score_predictions",
     "sign_run",
     "split_task_dataset",
@@ -96,6 +121,8 @@ __all__ = [
     "validate_spec",
     "validate_task_dataset",
     "verify_artifact",
+    "verify_build_attestation",
     "verify_bundle",
+    "verify_proofpack",
     "verify_registry",
 ]

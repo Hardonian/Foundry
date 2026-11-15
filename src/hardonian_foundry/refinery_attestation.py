@@ -4,10 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from . import signing
 from .canonical import canonical, digest
@@ -28,6 +29,56 @@ from .refinery_validation import (
     validate_run_id,
 )
 from .types import AnchorRecord
+
+
+@runtime_checkable
+class AnchorSink(Protocol):
+    """Service Provider Interface (SPI) for external anti-rollback anchor sinks."""
+
+    def publish(self, anchor: AnchorRecord) -> dict[str, Any]:
+        """Publish an anchor checkpoint externally and return an immutable receipt."""
+        ...
+
+
+class WormDirectoryAnchorSink:
+    """Write-once filesystem AnchorSink enforcing immutability per anchored head digest."""
+
+    def __init__(self, worm_dir: str | Path) -> None:
+        raw = str(worm_dir)
+        if not raw or any(ord(ch) < 32 for ch in raw):
+            raise ValueError("worm_dir must be a clean non-empty path")
+        if any(part == ".." for part in re.split(r"[/\\]", raw)):
+            raise ValueError("worm_dir contains path traversal")
+        self.worm_dir = Path(worm_dir).resolve()
+
+    def publish(self, anchor: AnchorRecord) -> dict[str, Any]:
+        head = anchor.get("head")
+        if not isinstance(head, str) or not signing.HEX64.fullmatch(head):
+            raise ValueError("anchor head must be a 64-char lowercase hex string")
+        self.worm_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        dest = (self.worm_dir / f"anchor-{head}.json").resolve()
+        if not dest.is_relative_to(self.worm_dir):
+            raise ValueError("WORM anchor destination escapes worm_dir")
+
+        payload = dict(anchor)
+        receipt_sha256 = digest(payload)
+        if dest.exists():
+            existing = json.loads(dest.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict) or digest(existing) != receipt_sha256:
+                raise ValueError(
+                    "WORM anchor immutability violation: conflicting anchor record already exists for head"
+                )
+        else:
+            _write_json_atomic(dest, payload)
+
+        return {
+            "sink_type": "worm_directory",
+            "immutable": True,
+            "anchor_file": str(dest),
+            "head": head,
+            "count": anchor["count"],
+            "receipt_sha256": receipt_sha256,
+        }
 
 
 def _iter_ledger_entries(path: str | Path, run_id: str, entry_type: str) -> list[dict[str, Any]]:
@@ -288,7 +339,8 @@ def attach_license(
 def sign_run(
     run_id: str,
     *,
-    private_key_path: str | Path,
+    private_key_path: str | Path | None = None,
+    signer: signing.SignerProvider | None = None,
     output_root: str | Path | None = None,
     cosign: bool = False,
     allowed_data_origins: Sequence[str] | None = None,
@@ -298,6 +350,11 @@ def sign_run(
     Verifies run.json integrity against the seq-1 ledger record BEFORE signing so
     pre-sign tampering of thresholds, model_manifest, or evaluation metrics fails closed.
     """
+    if signer is not None and not isinstance(signer, signing.SignerProvider):
+        raise TypeError("signer must satisfy SignerProvider protocol")
+    if signer is None and private_key_path is None:
+        raise ValueError("either private_key_path or signer must be provided")
+
     clean_id = validate_run_id(run_id)
     root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
     run_dir = resolve_run_dir(root_dir, clean_id)
@@ -323,7 +380,11 @@ def sign_run(
 
     idem_key = f"{clean_id}#sig"
     if cosign:
-        pub_preview = signing_mod.public_key_hex(str(private_key_path))
+        if signer is not None:
+            pub_preview = signer.public_key_hex()
+        else:
+            assert private_key_path is not None
+            pub_preview = signing_mod.public_key_hex(str(private_key_path))
         idem_key = f"{clean_id}#sig#{pub_preview[:16]}"
 
     def build_signature(entries: list[dict[str, Any]], signed_head: str) -> dict[str, Any]:
@@ -365,7 +426,13 @@ def sign_run(
                 "signing requires an allowed license first; attach an allowed license or recreate the run"
             )
 
-        public_hex = signing_mod.public_key_hex(str(private_key_path))
+        if signer is not None:
+            public_hex = signer.public_key_hex()
+            if not isinstance(public_hex, str) or not signing.HEX64.fullmatch(public_hex):
+                raise ValueError("signer public_key_hex must be 64-char lowercase hex")
+        else:
+            assert private_key_path is not None
+            public_hex = signing_mod.public_key_hex(str(private_key_path))
         if cosign and existing_sigs:
             for sig_entry in existing_sigs:
                 srec = sig_entry["record"]
@@ -384,7 +451,13 @@ def sign_run(
             "created_at": timestamp,
             "run_sha256": run_sha256,
         }).encode("utf-8")
-        signature_hex = signing_mod.sign(message, str(private_key_path))
+        if signer is not None:
+            signature_hex = signer.sign(message)
+            backend_name: str | None = signer.backend_name()
+        else:
+            assert private_key_path is not None
+            signature_hex = signing_mod.sign(message, str(private_key_path))
+            backend_name = signing_mod.SIGNING_BACKEND
         sig_record: dict[str, Any] = {
             "data_origin": "synthetic",
             "type": "promotion_signature",
@@ -395,7 +468,7 @@ def sign_run(
             "public_key_hex": public_hex,
             "signature_hex": signature_hex,
             "created_at": timestamp,
-            "signing_backend": signing_mod.SIGNING_BACKEND,
+            "signing_backend": backend_name,
         }
         if "tenant_id" in run_record:
             sig_record["tenant_id"] = run_record["tenant_id"]
@@ -424,8 +497,15 @@ def anchor_run(
     *,
     output_root: str | Path | None = None,
     anchor_path: str | Path | None = None,
+    sink: AnchorSink | None = None,
+    worm_dir: str | Path | None = None,
 ) -> AnchorRecord:
-    """Emit (and optionally persist) an external ledger checkpoint anchor to detect rollback/truncation."""
+    """Emit (and optionally persist/publish) an external ledger checkpoint anchor to detect rollback/truncation."""
+    if sink is not None and not isinstance(sink, AnchorSink):
+        raise TypeError("sink must satisfy AnchorSink protocol")
+    if worm_dir is not None and sink is None:
+        sink = WormDirectoryAnchorSink(worm_dir)
+
     root_dir = Path(output_root or DEFAULT_RUNS_DIR).resolve()
     if run_id is not None:
         clean_id = validate_run_id(run_id)
@@ -463,6 +543,8 @@ def anchor_run(
         "anchored_at": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
         "ledger_sha256": hashlib.sha256(ledger_file.read_bytes()).hexdigest(),
     }
+    if sink is not None:
+        anchor["sink_receipt"] = sink.publish(anchor)
     if anchor_path is not None:
         dest = Path(anchor_path).resolve()
         _write_json_atomic(dest, dict(anchor))

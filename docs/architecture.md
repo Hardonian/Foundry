@@ -30,11 +30,12 @@ flowchart LR
         BASE["baseline.py & synthetic_policy.py"]
     end
 
-    subgraph Refinery["Refinery Orchestration & Registry"]
-        TE["task_eval.py (scoring + compare_task_predictions)"]
-        ART["artifact.py"]
+    subgraph Refinery["Refinery Orchestration, Registry & Proofpacks"]
+        TE["task_eval.py (scoring, compare, trajectories, kappa, PII)"]
+        ART["artifact.py (store + SLSA/in-toto attestations)"]
         REF["refinery.py facade -> refinery_{validation,preflight,runs,gates,attestation}.py"]
         REG["registry.py (SHA-256 registry.json)"]
+        PP["proofpack.py (Proofpack v2 read-only contract)"]
     end
 
     subgraph Interfaces["Interfaces & SDK"]
@@ -54,10 +55,12 @@ flowchart LR
     TEN --> REF
     ART --> REF
     REF --> REG
+    REF --> PP
     BASE --> CLI
     PROV --> CLI
     REF --> CLI
     REG --> CLI
+    PP --> CLI
     SDK --> CLI
 ```
 
@@ -111,19 +114,20 @@ sequenceDiagram
 |---|---|---|
 | `canonical.py` | Single-pass canonical JSON serializer (`canonical`, `canonical_bytes`) & SHA-256 (`digest`); rejects non-string keys, circular refs, NaN/Inf, lone UTF-16 surrogates, normalizes `-0.0` to `0.0` | File I/O or network calls |
 | `evidence.py` | Hash-chained append-only ledger (`JsonlEvidenceStore`, `SQLiteEvidenceStore`, `checkpoint`, `verify`), cross-platform file locking (`fcntl` / `msvcrt.LK_NBLCK`), `.ckpt` prefix checkpoints, `data_origin` policy gate | Remote consensus or rollback prevention without external anchor |
-| `signing.py` | Fail-closed Ed25519 keygen/signing/verification (`SigningUnavailable`, `cryptography` extra), POSIX `0600` & Windows ACL enforcement (`GetNamedSecurityInfoW` / protected `SetNamedSecurityInfoW` DACL on `generate_keypair`), keyring quorum (`parse_keyring`, `load_keyring_policy`, `check_keyring_quorum`, strict entry allowlist) | Storing private keys in repo or embedding keys in run records |
+| `signing.py` | Fail-closed Ed25519 keygen/signing/verification (`SigningUnavailable`, `cryptography` extra), pluggable `SignerProvider` SPI (`LocalPemSignerProvider`, `CallbackSignerProvider`), POSIX `0600` & Windows ACL enforcement (`GetNamedSecurityInfoW` / protected `SetNamedSecurityInfoW` DACL on `generate_keypair`), keyring quorum (`parse_keyring`, `load_keyring_policy`, `check_keyring_quorum`, strict entry allowlist) | Storing private keys in repo or embedding keys in run records |
 | `licensing.py` | `evaluate()` SPDX allowlist (`Apache-2.0`, `MIT`, `BSD-3-Clause`, `CC0-1.0`, `OFL-1.1`), bounded `notes` (`<= 1024`), origin tiers (`synthetic`, `consented_pilot`, `redacted_eval` with explicit `governance_attestation`), optional local SHA-256 verification | Verifying legal truth of claims on remote hubs |
 | `tenancy.py` | `TenantContext` validation, `authorize_run`, and `scope_ledger_query` fail-closed isolation helpers | Production identity/SSO authentication |
 | `baseline.py` | Deterministic integer minor-unit reconciliation baseline, allowlist tool verifier (`verify_trace`), 22-case `evaluate_agents()`, synthetic dataset/split/eval | Trained ML inference or autonomous writes |
 | `synthetic_policy.py` | Deterministic integer arithmetic gate (`assess`, `assess_with_suggestion`) backed by `canonical.digest` that untrusted model suggestions cannot override | Financial writes or execution |
-| `task_eval.py` | Frozen task-spec validation (`validate_spec`), traversal-free path checks, group-disjoint splits, single-pass `score_predictions`, confusion matrix, per-family breakdown, calibration/bootstrap/McNemar, paired `compare_task_predictions` | Running external models directly |
-| `artifact.py` | Content-addressed local artifact store (`add_artifact`, `verify_artifact`, `get_artifact_path`, `list_artifacts`, `sha256_file`) | Remote model registry or cloud object storage |
+| `task_eval.py` | Frozen task-spec validation (`validate_spec`), traversal-free path checks, group-disjoint splits, single-pass `score_predictions`, confusion matrix, per-family breakdown, calibration/bootstrap/McNemar, `compare_task_predictions`, `cohens_kappa`, `fleiss_kappa`, `evaluate_trajectories`, `scan_dataset_pii` | Running external models directly |
+| `artifact.py` | Content-addressed local artifact store (`add_artifact`, `verify_artifact`, `get_artifact_path`, `list_artifacts`, `sha256_file`) and SLSA/in-toto build attestations (`create_build_attestation`, `verify_build_attestation`) | Remote model registry or cloud object storage |
 | `registry.py` | Fail-closed persistent SHA-256 model registry (`resolve_registry_path`, `register_model`, `list_models`, `get_model`, `verify_registry`) over atomic `registry.json` snapshots | Auto-promotion without human sign-off or remote registry sync |
-| `refinery.py` + `refinery_*.py` | Modular orchestration (`types.py`, `validation`, `preflight`, `runs`, `gates`, `attestation`) behind `refinery` facade (`_code_digest` across package `.py`, `secrets.token_hex(6)`, `verify_bundle`, `generate_audit_report`) | Auto-deploying models without human sign-off |
+| `proofpack.py` | Frozen read-only `Proofpack v2` builder and verifier (`build_proofpack`, `verify_proofpack`) sealing audit evidence & downstream safety invariants | Auto-executing settlement or mutating external systems |
+| `refinery.py` + `refinery_*.py` | Modular orchestration (`types.py`, `validation`, `preflight`, `runs`, `gates`, `attestation` with `AnchorSink` / `WormDirectoryAnchorSink`) behind `refinery` facade (`_code_digest` across package `.py`, `secrets.token_hex(6)`, `verify_bundle`, `generate_audit_report`) | Auto-deploying models without human sign-off |
 | `provider.py` | Opt-in loopback HTTP adapter (`probe`, `predict`, `suggest`, `predict_batch`, `_DeadlineGuard`, `CircuitBreaker`, `audit_sha256`, `latency_ms`) with `UNAVAILABLE` fail-closed fallback | Heuristic substitution on provider error |
 | `training_utils.py` | Shared offline preflight (`verify_private_dir`, `available_ram_bytes`, `acquire_training_lock`), pinned snapshot/Git-blob verification, `auto_map` rejection, `model_registry`, padded micro-batching, `LabelPrefixTrie`, training adapter hooks | Hub downloading or production serving |
 | `__init__.py` + `__main__.py` + `py.typed` | Typed (`py.typed` PEP 561) public Python SDK (`__all__`) without eager `[signing]`/`[train]` imports, plus `python -m hardonian_foundry` entrypoint | Eager optional-extra loading or stateful singletons |
-| `cli.py` | `foundry` / `python -m hardonian_foundry` entrypoint, structured exit codes (`0`/`1`/`2`), `--json-errors`, subcommands for `refinery` (`verify-bundle`, `report`, `compare`, ...), `provider`, `registry` (`list`, `promote`, `register`, `get`, `verify`), `doctor`, `demo`, `eval`, `policy-demo` | Silent fallback on invalid inputs |
+| `cli.py` | `foundry` / `python -m hardonian_foundry` entrypoint, structured exit codes (`0`/`1`/`2`), `--json-errors`, subcommands for `refinery` (`verify-bundle`, `report`, `compare`, `proofpack`, `verify-proofpack`, `anchor --worm-dir`, `artifact {attest,verify-attestation}`, ...), `provider`, `registry` (`list`, `promote`, `register`, `get`, `verify`), `doctor`, `demo`, `eval`, `policy-demo` | Silent fallback on invalid inputs |
 
 ---
 

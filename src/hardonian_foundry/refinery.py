@@ -5,6 +5,7 @@ Synthetic-only research baseline. Never deploy for real financial data or autono
 from __future__ import annotations
 
 from . import signing
+from .artifact import create_build_attestation, verify_build_attestation
 from .baseline import (
     dataset as default_dataset,
 )
@@ -17,7 +18,10 @@ from .evidence import _append_with_builder as evidence_append_with_builder
 from .evidence import append as evidence_append
 from .evidence import verify_entries as evidence_verify_entries
 from .licensing import evaluate as evaluate_license
+from .proofpack import build_proofpack, verify_proofpack
 from .refinery_attestation import (
+    AnchorSink,
+    WormDirectoryAnchorSink,
     _find_ledger_entry,
     _iter_ledger_entries,
     anchor_run,
@@ -56,8 +60,17 @@ from .registry import (
     register_model,
     verify_registry,
 )
+from .signing import (
+    CallbackSignerProvider,
+    LocalPemSignerProvider,
+    SignerProvider,
+)
 from .task_eval import (
+    cohens_kappa,
     compare_task_predictions,
+    evaluate_trajectories,
+    fleiss_kappa,
+    scan_dataset_pii,
     score_predictions,
     split_task_dataset,
     validate_spec,
@@ -65,14 +78,22 @@ from .task_eval import (
 )
 
 __all__ = [
+    "AnchorSink",
+    "CallbackSignerProvider",
     "DEFAULT_RUNS_DIR",
+    "LocalPemSignerProvider",
+    "SignerProvider",
+    "WormDirectoryAnchorSink",
     "_code_digest",
     "_find_ledger_entry",
     "_iter_ledger_entries",
     "anchor_run",
     "attach_license",
+    "build_proofpack",
     "canonical",
+    "cohens_kappa",
     "compare_task_predictions",
+    "create_build_attestation",
     "create_run",
     "create_task_run",
     "default_dataset",
@@ -81,11 +102,13 @@ __all__ = [
     "evaluate_dataset",
     "evaluate_license",
     "evaluate_promotion",
+    "evaluate_trajectories",
     "evidence_append",
     "evidence_append_with_builder",
     "evidence_verify_entries",
     "export_bundle",
     "extract_verified_license_attachment",
+    "fleiss_kappa",
     "generate_audit_report",
     "get_model",
     "inspect_run",
@@ -99,6 +122,7 @@ __all__ = [
     "resolve_ledger_path",
     "resolve_run_dir",
     "run_preflight",
+    "scan_dataset_pii",
     "score_predictions",
     "sign_run",
     "signing",
@@ -109,6 +133,8 @@ __all__ = [
     "validate_run_id",
     "validate_spec",
     "validate_task_dataset",
+    "verify_build_attestation",
     "verify_bundle",
+    "verify_proofpack",
     "verify_registry",
 ]

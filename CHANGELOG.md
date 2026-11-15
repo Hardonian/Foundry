@@ -18,6 +18,11 @@ based on Keep a Changelog; this project uses Semantic Versioning.
   - Added CLI `foundry refinery verify-bundle` for standalone SHA-256 manifest + ledger chain verification of exported `dir`, `zip`, `tar`, and `tar.gz`/`tgz` bundles.
 - **Long-Term Roadmap (`docs/roadmap.md`):**
   - Documented Horizon 1 (`v1.0.0` shipped) through Horizon 4 (`v2.0`: KMS/HSM/Sigstore `SignerProvider`, RFC 3161/WORM `AnchorSink`, multi-turn agentic trajectory gates, calibration/kappa drift monitoring, and federated cross-org proofpack interop).
+- **Extended Horizon Contracts (Custody, Lineage, Trajectory/Kappa/PII, Proofpack v2):**
+  - `signing.py` & `refinery_attestation.py`: Added `@runtime_checkable class SignerProvider`, `LocalPemSignerProvider`, `CallbackSignerProvider` (fail-closed verified external signing), `AnchorSink`, `WormDirectoryAnchorSink`, `sign_run(..., signer=...)`, `anchor_run(..., sink=..., worm_dir=...)`, and CLI `--worm-dir`.
+  - `artifact.py` & `cli.py`: Added `create_build_attestation` and `verify_build_attestation` (SLSA/in-toto v1 provenance) plus `foundry refinery artifact {attest,verify-attestation}`.
+  - `task_eval.py`: Added `cohens_kappa`, `fleiss_kappa`, `evaluate_trajectories` (`false_tool_execution_rate == 0.0` & unsafe arg/tool gates), and `scan_dataset_pii` (pre-ingestion PII/secret scanner without raw leak echoes).
+  - `proofpack.py` & `cli.py`: Added frozen read-only `Proofpack v2` (`build_proofpack`, `verify_proofpack`, `foundry refinery {proofpack,verify-proofpack}`) for downstream audit consumers.
 
 ### Changed
 - Bumped package version to `1.0.0` in `pyproject.toml`, `src/hardonian_foundry/__init__.py`, and `scripts/make_social_preview.py`.

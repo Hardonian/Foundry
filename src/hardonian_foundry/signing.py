@@ -17,9 +17,9 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -565,3 +565,73 @@ def verify(message_bytes: bytes, signature_hex: Any, public_keys: Any) -> bool:
         except (InvalidSignature, ValueError, OSError):
             continue
     return False
+
+
+@runtime_checkable
+class SignerProvider(Protocol):
+    """Service Provider Interface (SPI) for Ed25519 local or remote KMS/HSM signers."""
+
+    def public_key_hex(self) -> str:
+        """Return the 64-char lowercase hex Ed25519 public key."""
+        ...
+
+    def sign(self, message_bytes: bytes) -> str:
+        """Sign exact message_bytes and return a 128-char lowercase hex Ed25519 signature."""
+        ...
+
+    def backend_name(self) -> str:
+        """Return a short clean identifier for the backing signing provider."""
+        ...
+
+
+class LocalPemSignerProvider:
+    """Default SignerProvider backed by an owner-restricted local Ed25519 PEM file."""
+
+    def __init__(self, private_key_path: str | os.PathLike[str]) -> None:
+        self._path = os.fspath(private_key_path)
+
+    def public_key_hex(self) -> str:
+        return public_key_hex(self._path)
+
+    def sign(self, message_bytes: bytes) -> str:
+        return sign(message_bytes, self._path)
+
+    def backend_name(self) -> str:
+        return SIGNING_BACKEND or "unavailable"
+
+
+class CallbackSignerProvider:
+    """Fail-closed external SignerProvider adapter for KMS, HSM, or Sigstore callbacks."""
+
+    def __init__(
+        self,
+        *,
+        public_key_hex: str,
+        sign_fn: Callable[[bytes], str],
+        provider_name: str = "external_kms",
+    ) -> None:
+        if not isinstance(public_key_hex, str) or not HEX64.fullmatch(public_key_hex):
+            raise ValueError("public_key_hex must be a 64-char lowercase ed25519 hex string")
+        if not callable(sign_fn):
+            raise TypeError("sign_fn must be callable")
+        clean_name = _clean_optional_str(provider_name, field="provider_name", limit=64)
+        if clean_name is None:
+            raise ValueError("provider_name must be a clean nonempty string <= 64 chars")
+        self._public_key_hex = public_key_hex
+        self._sign_fn = sign_fn
+        self._provider_name = clean_name
+
+    def public_key_hex(self) -> str:
+        return self._public_key_hex
+
+    def backend_name(self) -> str:
+        return self._provider_name
+
+    def sign(self, message_bytes: bytes) -> str:
+        if not backend_available():
+            raise SigningUnavailable("signing backend unavailable")
+        sig_hex = self._sign_fn(message_bytes)
+        if not verify(message_bytes, sig_hex, [self._public_key_hex]):
+            raise ValueError("external signer produced an invalid or unverifiable Ed25519 signature")
+        return sig_hex
+

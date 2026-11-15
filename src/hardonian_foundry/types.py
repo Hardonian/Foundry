@@ -154,6 +154,7 @@ class AnchorRecord(TypedDict):
     anchored_at: str
     ledger_sha256: str
     anchor_path: NotRequired[str | None]
+    sink_receipt: NotRequired[dict[str, Any]]
 
 
 class RunSummary(TypedDict):

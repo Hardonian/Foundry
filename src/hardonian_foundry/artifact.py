@@ -6,10 +6,12 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .canonical import digest
 from .refinery_validation import DEFAULT_RUNS_DIR, validate_run_id
 from .types import ArtifactEntry, ArtifactVerifyResult
 
@@ -274,3 +276,187 @@ def list_artifacts(
             continue
         entries.append(item)
     return entries
+
+
+_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
+_BUILD_TYPE = "https://hardonian.io/foundry/offline-build/v1"
+
+
+def _validate_clean_path_or_id(value: Any, *, field: str, max_len: int = 512) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > max_len
+        or value.strip() != value
+        or any(ord(ch) < 32 for ch in value)
+        or any(part == ".." for part in re.split(r"[/\\]", value))
+    ):
+        raise ValueError(f"{field} must be a clean nonempty string <= {max_len} chars without traversal")
+    return value
+
+
+def create_build_attestation(
+    subject_path: str | Path,
+    *,
+    builder_id: str = "hardonian-foundry/offline-builder@v1",
+    materials: Sequence[dict[str, str]] | None = None,
+    run_id: str | None = None,
+    out_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create a SLSA/in-toto JSON provenance statement bound to SHA-256 subject and materials."""
+    subj = Path(subject_path).resolve()
+    subj_sha, subj_size = sha256_file(subj)
+    clean_builder = _validate_clean_path_or_id(builder_id, field="builder_id", max_len=128)
+    clean_run_id = validate_run_id(run_id) if run_id is not None else None
+
+    normalized_materials: list[dict[str, str]] = []
+    if materials is not None:
+        if isinstance(materials, (str, bytes)):
+            raise TypeError("materials must be a sequence of {uri, sha256} objects")
+        for idx, item in enumerate(materials):
+            if not isinstance(item, dict):
+                raise TypeError(f"materials[{idx}] must be a dict")
+            uri = _validate_clean_path_or_id(item.get("uri"), field=f"materials[{idx}].uri", max_len=512)
+            mat_sha = item.get("sha256")
+            if not isinstance(mat_sha, str) or not HEX64_RE.fullmatch(mat_sha):
+                raise ValueError(f"materials[{idx}].sha256 must be a 64-char lowercase hex string")
+            normalized_materials.append({"uri": uri, "sha256": mat_sha})
+        normalized_materials.sort(key=lambda m: (m["uri"], m["sha256"]))
+
+    core: dict[str, Any] = {
+        "schema_version": "1.0",
+        "statement_type": _STATEMENT_TYPE,
+        "predicate_type": _PREDICATE_TYPE,
+        "subject": {
+            "name": subj.name,
+            "sha256": subj_sha,
+            "size_bytes": subj_size,
+        },
+        "predicate": {
+            "builder": {"id": clean_builder},
+            "build_type": _BUILD_TYPE,
+            "run_id": clean_run_id,
+            "materials": normalized_materials,
+            "reproducible": True,
+            "review_required": True,
+        },
+        "created_at": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+    }
+    att_sha = digest(core)
+    statement: dict[str, Any] = {**core, "attestation_sha256": att_sha}
+
+    if out_path is not None:
+        clean_out = _validate_clean_path_or_id(str(out_path), field="out_path", max_len=1024)
+        dest = Path(clean_out).resolve()
+        _atomic_write_bytes(dest, (json.dumps(statement, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        return {**statement, "saved_path": str(dest)}
+
+    return statement
+
+
+def verify_build_attestation(
+    attestation_or_path: dict[str, Any] | str | Path,
+    *,
+    subject_path: str | Path | None = None,
+    expected_subject_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Verify a SLSA/in-toto build attestation fail-closed against its SHA-256 and optional subject."""
+    if expected_subject_sha256 is not None and (
+        not isinstance(expected_subject_sha256, str) or not HEX64_RE.fullmatch(expected_subject_sha256)
+    ):
+        raise ValueError("expected_subject_sha256 must be a 64-char lowercase hex string")
+
+    if isinstance(attestation_or_path, (str, Path)):
+        att_path = Path(attestation_or_path)
+        if not att_path.is_file():
+            raise FileNotFoundError(f"attestation file not found: {attestation_or_path}")
+        try:
+            data = json.loads(att_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "status": "INVALID",
+                "verified": False,
+                "subject_sha256": None,
+                "attestation_sha256": None,
+                "errors": [f"unreadable or invalid JSON attestation: {exc}"],
+            }
+    elif isinstance(attestation_or_path, dict):
+        data = attestation_or_path
+    else:
+        raise TypeError("attestation_or_path must be a dict or path")
+
+    if not isinstance(data, dict):
+        return {
+            "status": "INVALID",
+            "verified": False,
+            "subject_sha256": None,
+            "attestation_sha256": None,
+            "errors": ["attestation must be a JSON object"],
+        }
+
+    errors: list[str] = []
+    if data.get("statement_type") != _STATEMENT_TYPE:
+        errors.append(f"statement_type must equal {_STATEMENT_TYPE}")
+    if data.get("predicate_type") != _PREDICATE_TYPE:
+        errors.append(f"predicate_type must equal {_PREDICATE_TYPE}")
+
+    subject = data.get("subject")
+    subj_sha: str | None = None
+    if not isinstance(subject, dict):
+        errors.append("subject must be an object")
+    else:
+        raw_sha = subject.get("sha256")
+        if not isinstance(raw_sha, str) or not HEX64_RE.fullmatch(raw_sha):
+            errors.append("subject.sha256 must be a 64-char lowercase hex string")
+        else:
+            subj_sha = raw_sha
+
+    predicate = data.get("predicate")
+    if not isinstance(predicate, dict):
+        errors.append("predicate must be an object")
+    else:
+        if predicate.get("review_required") is not True:
+            errors.append("predicate.review_required must be True")
+        mats = predicate.get("materials")
+        if not isinstance(mats, list):
+            errors.append("predicate.materials must be a list")
+        else:
+            for idx, item in enumerate(mats):
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("uri"), str)
+                    or not item.get("uri")
+                    or not isinstance(item.get("sha256"), str)
+                    or not HEX64_RE.fullmatch(item["sha256"])
+                ):
+                    errors.append(f"predicate.materials[{idx}] must include valid uri and sha256")
+
+    core = {k: v for k, v in data.items() if k not in ("attestation_sha256", "saved_path")}
+    expected_att_sha = digest(core)
+    att_sha = data.get("attestation_sha256")
+    if not isinstance(att_sha, str) or att_sha != expected_att_sha:
+        errors.append("attestation_sha256 mismatch with canonical statement digest")
+
+    if subject_path is not None:
+        try:
+            actual_sha, _ = sha256_file(subject_path)
+            if subj_sha is None or actual_sha != subj_sha:
+                errors.append(f"subject file digest mismatch: expected {subj_sha}, got {actual_sha}")
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            errors.append(f"subject file verification failed: {exc}")
+
+    if expected_subject_sha256 is not None and subj_sha != expected_subject_sha256:
+        errors.append(
+            f"expected_subject_sha256 mismatch: expected {expected_subject_sha256}, got {subj_sha}"
+        )
+
+    ok = not errors
+    return {
+        "status": "VERIFIED" if ok else "INVALID",
+        "verified": ok,
+        "subject_sha256": subj_sha,
+        "attestation_sha256": att_sha if isinstance(att_sha, str) else None,
+        "errors": sorted(errors),
+    }
+

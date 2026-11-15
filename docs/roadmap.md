@@ -23,9 +23,9 @@ Every milestone on this roadmap preserves the following invariants without excep
 ```mermaid
 flowchart LR
     H1["Horizon 1: v1.0.0 (Shipped)\nProductized Suite & Local Registry\n- Public SDK + py.typed + __main__\n- Persistent SHA-256 registry.json\n- compare & JSON/MD audit reports\n- verify-bundle CLI + 3 case studies"]
-    H2["Horizon 2: v1.1 - v1.2\nEnterprise Custody & Remote Trust\n- KMS / HSM / Sigstore SignerProvider\n- RFC 3161 & WORM AnchorSink\n- Hermetic Training & SLSA Attestation"]
-    H3["Horizon 3: v1.3 - v1.5\nAgentic Gates & Pilot Governance\n- Multi-turn trajectory evaluation\n- Rolling calibration & kappa monitors\n- Signed consent & redaction gates"]
-    H4["Horizon 4: v2.0\nFederated Proofpacks\n- Cross-org threshold co-signing\n- Air-gapped verifier distribution\n- Schema-pinned Settler / SAT interop"]
+    H2["Horizon 2: Custody, WORM & SLSA\n- SignerProvider + Callback KMS SPI (Shipped)\n- WormDirectoryAnchorSink (Shipped)\n- SLSA/in-toto artifact attestations (Shipped)\n- Cloud KMS / RFC 3161 HTTP (Future)"]
+    H3["Horizon 3: Agentic & Pilot Governance\n- evaluate_trajectories gate (Shipped)\n- cohens_kappa & fleiss_kappa (Shipped)\n- scan_dataset_pii pre-gate (Shipped)\n- Shadow-mode drift & signed IRB (Future)"]
+    H4["Horizon 4: Federated Proofpacks\n- Proofpack v2 contract & CLI (Shipped)\n- Cross-org CRL federation (Future)\n- Air-gapped foundry-verify wheel (Future)"]
 
     H1 --> H2 --> H3 --> H4
 ```
@@ -76,20 +76,18 @@ flowchart LR
 **Goal:** Remove single-operator PEM custody and local filesystem anchoring as production trust bottlenecks while keeping offline bundle verification zero-trust.
 
 ### `v1.1` — Pluggable Custody & Transparency Anchoring
-1. **`SignerProvider` Service Provider Interface (`signing.py`)**
-   - Abstract key signing behind a uniform canonical prehash envelope so local Ed25519 PEMs, AWS KMS / GCP Cloud KMS / Azure Key Vault asymmetric keys, PKCS#11 HSMs, and keyless OIDC Sigstore bundles share one deterministic verification path.
-   - Maintain offline verification: signatures carry public key/certificate chains verified against a pinned keyring (`keyring.json`), with zero runtime cloud calls required inside `refinery inspect` or `refinery verify-bundle`.
-2. **External Anti-Rollback `AnchorSink` Integrations**
-   - Extend `refinery anchor` beyond local `anchor.json` files to write-once external checkpoints:
-     - RFC 3161 Time-Stamping Authority (TSA) signed tokens over `(ledger_head, count, run_record_sha256)`.
-     - Cloud WORM storage backends (S3 Object Lock / GCS Bucket Lock) with append-only retention metadata.
-     - Optional public or private transparency-log inclusion receipts (Rekor / Trillian style Merkle proofs).
+1. **`SignerProvider` Service Provider Interface (`signing.py`) — Core SPI Implemented**
+   - Shipped `@runtime_checkable class SignerProvider`, `LocalPemSignerProvider`, and `CallbackSignerProvider` plus `sign_run(..., signer=...)` enforcing offline Ed25519 verification before accepting any external callback signature.
+   - Future work: vendor-specific cloud SDK wrappers (AWS KMS, GCP Cloud KMS, Azure Key Vault, PKCS#11 HSM, keyless OIDC Sigstore bundles) plugging directly into `SignerProvider`.
+2. **External Anti-Rollback `AnchorSink` Integrations — Core SPI & WORM Sink Implemented**
+   - Shipped `@runtime_checkable class AnchorSink`, `WormDirectoryAnchorSink` (conflict-detecting write-once storage per head digest), `anchor_run(..., sink=..., worm_dir=...)`, and CLI `foundry refinery anchor --worm-dir <dir>`.
+   - Future work: external RFC 3161 Time-Stamping Authority (TSA) HTTP clients, S3/GCS Object Lock WORM adapters, and Rekor/Trillian transparency-log inclusion receipts.
 
 ### `v1.2` — Hermetic Execution & Artifact Lineage
-1. **Supply-Chain Provenance for Weights & Datasets (`artifact.py`)**
-   - Attach SLSA / `in-toto` style build statements linking base model commit SHAs, LoRA adapter artifacts, tokenizer configs, and dataset hashes to `run.json`.
+1. **Supply-Chain Provenance for Weights & Datasets (`artifact.py`) — SLSA/in-toto Implemented**
+   - Shipped `create_build_attestation` and `verify_build_attestation` plus CLI `foundry refinery artifact attest` and `verify-attestation` emitting SHA-256-sealed `https://in-toto.io/Statement/v1` + `https://slsa.dev/provenance/v1` JSON documents binding subject weights and materials.
    - Enforce pre-run artifact digest pinning and optional SPDX + license-text hashing inside content-addressed metadata.
-2. **Reproducible Environment Attestations (`preflight`)**
+2. **Reproducible Environment Attestations (`preflight`) — Planned**
    - Capture deterministic container / lockfile (`uv.lock` / `requirements.txt` hash) digests and GPU/CPU determinism flags during training runs for audit traceability.
 
 ---
@@ -98,20 +96,19 @@ flowchart LR
 
 **Goal:** Expand Foundry from single-turn classification specs to multi-step tool-using specialist models and governed real-world pilot calibration.
 
-### `v1.3` — Multi-Turn & Tool-Use Task Specs
-- Extend `task_eval.py` schema (`schema_version: "1.1"` backward compatible with `"1.0"`) with structured trajectory contracts:
-  - Step-level tool argument schema validation and forbidden-tool refusal assertions (`false_tool_execution_rate == 0.0`).
-  - Integrated adversarial prompt-injection and jailbreak gate suites connected cleanly to the repository's `promptfoo` red-team test matrix.
-  - Exact abstention / escalation accuracy metrics when inputs lack required domain evidence.
+### `v1.3` — Multi-Turn & Tool-Use Task Specs — Core Trajectory Gate Implemented
+- Shipped `evaluate_trajectories` (`task_eval.py`) enforcing `false_tool_execution_rate == 0.0`, tool allowlists/forbidden-tool checks, and traversal/control-character argument safety across multi-turn step lists.
+- Integrated adversarial prompt-injection and jailbreak gate suites connected cleanly to the repository's `promptfoo` red-team test matrix.
+- Planned: exact abstention / escalation accuracy metrics in `task_eval` schema `1.1`.
 
-### `v1.4` — Continuous Calibration, Slicing & Multi-Rater Agreement
-- **Calibration & Slice Gates:** Track Expected Calibration Error (ECE), Brier score, and subgroup / tenant slice minimum recall bounds directly inside `task_eval` and promotion gates.
-- **Human Agreement Benchmarks:** Compute Cohen's kappa and Fleiss' kappa across masked dual-rater adjudication sets (`docs/calibration-plan.md`), blocking promotion if model disagreement patterns spike on critical classes.
-- **Shadow-Mode Drift Watchlists:** Read-only comparison reports (`refinery compare` over time windows) highlighting confidence shifts without mutating live serving configs.
+### `v1.4` — Continuous Calibration, Slicing & Multi-Rater Agreement — Kappa Implemented
+- **Calibration & Slice Gates (Planned):** Track rolling calibration slices and subgroup/tenant slice minimum recall bounds over time windows inside promotion gates.
+- **Human Agreement Benchmarks — Implemented:** Shipped `cohens_kappa` and `fleiss_kappa` (`task_eval.py`) to gate dual- and multi-rater adjudication sets aligned with [docs/dataset-card.md](dataset-card.md).
+- **Shadow-Mode Drift Watchlists (Planned):** Automated scheduled comparison reports (`refinery compare` over time windows) without mutating live serving configs.
 
-### `v1.5` — Consented Pilot & Privacy Verification Automation
-- **Signed Consent Receipts:** Upgrade `governance_attestation` from declarative metadata to Ed25519/KMS-signed organizational approvals referencing IRB/legal retention policies and redaction audits.
-- **Pre-Ingestion PII & Canary Scanners:** Fail-closed dataset scanners checking for residual emails, account numbers, IBANs, SSNs, or canary secrets before any `consented_pilot` or `redacted_eval` dataset enters `evidence.jsonl`.
+### `v1.5` — Consented Pilot & Privacy Verification Automation — Pre-Ingestion PII Scanner Implemented
+- **Signed Consent Receipts (Planned):** Upgrade `governance_attestation` from declarative metadata to Ed25519/KMS-signed organizational approvals referencing IRB/legal retention policies and redaction audits.
+- **Pre-Ingestion PII & Canary Scanners — Implemented:** Shipped `scan_dataset_pii` (`task_eval.py`) blocking residual emails, US SSNs, IBANs, and API secret tokens before `consented_pilot` or `redacted_eval` ingestion without echoing sensitive text into logs.
 
 ---
 
@@ -119,12 +116,12 @@ flowchart LR
 
 **Goal:** Enable mutually distrustful organizations (model vendor, validator, auditor, operator) to verify specialized model promotions cleanly across organizational boundaries.
 
-1. **Cross-Organization Threshold Keyrings**
+1. **Cross-Organization Threshold Keyrings (Planned)**
    - Extend quorum policies (`required_signatures`, `required_roles`) with organization namespaces, time-bounded delegation certificates, and CRL/revocation distribution feeds so no single entity can unilaterally forge promotion readiness.
-2. **Air-Gapped Standalone Verifier Distribution (`foundry-verify`)**
+2. **Air-Gapped Standalone Verifier Distribution (`foundry-verify`) (Planned)**
    - Publish a minimal zero-heavy-dependency verifier package (`stdlib` + optional PyCA `cryptography`) capable of auditing any `export-bundle` archive, RFC 3161 anchor, and `registry.json` snapshot in locked-down compliance enclaves.
-3. **Versioned Proofpack Contract for Downstream Consumers**
-   - Freeze a read-only `Proofpack v2` JSON schema emitted by `export-bundle` / `generate_audit_report` for external consumers (`model-tools` routing allowlists, `Settler`, and `SAT-Frontier` audit trails), preserving clean one-way decoupling: downstream systems verify Foundry proofpacks without Foundry ever importing or mutating operational state.
+3. **Versioned Proofpack Contract for Downstream Consumers — `Proofpack v2` Implemented**
+   - Shipped `proofpack.py` (`build_proofpack`, `verify_proofpack`) and CLI `foundry refinery proofpack` / `verify-proofpack` emitting and verifying SHA-256-sealed `hardonian.foundry.proofpack.v2` JSON payloads (`read_only_advisory`, `review_required: true`, `financial_write: false`, `executed: false`) for `model-tools`, `Settler`, and `SAT-Frontier` without coupling repositories.
 
 ---
 

@@ -382,6 +382,7 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
     from .refinery import (
         anchor_run,
         attach_license,
+        build_proofpack,
         create_run,
         create_task_run,
         diff_runs,
@@ -395,6 +396,7 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
         sign_run,
         validate_dataset,
         verify_bundle,
+        verify_proofpack,
     )
     from .task_eval import (
         compare_task_predictions,
@@ -545,7 +547,12 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
             return EXIT_OK
 
         if action == "anchor":
-            anchor_res = anchor_run(args.run_id, output_root=args.output_root, anchor_path=args.out)
+            anchor_res = anchor_run(
+                args.run_id,
+                output_root=args.output_root,
+                anchor_path=args.out,
+                worm_dir=args.worm_dir,
+            )
             _emit_json(anchor_res)
             return EXIT_OK
 
@@ -592,17 +599,7 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
         if action == "report":
             tenant_ctx = _build_tenant_context(args)
             keyring = load_keyring(args.keyring) if getattr(args, "keyring", None) else None
-            exp_head = getattr(args, "expected_head", None)
-            exp_count = getattr(args, "expected_count", None)
-            anchor_path = getattr(args, "anchor", None)
-            if anchor_path:
-                anchor_data = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
-                if not isinstance(anchor_data, dict):
-                    raise ValueError("anchor file must contain a JSON object")
-                if exp_head is None:
-                    exp_head = anchor_data.get("head")
-                if exp_count is None:
-                    exp_count = anchor_data.get("count")
+            exp_head, exp_count = _resolve_anchor_expectations(args)
             report_res = generate_audit_report(
                 args.run_id,
                 output_root=args.output_root,
@@ -648,6 +645,27 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
             _emit_json(cmp_res)
             return EXIT_OK
 
+        if action == "proofpack":
+            tenant_ctx = _build_tenant_context(args)
+            keyring = load_keyring(args.keyring) if getattr(args, "keyring", None) else None
+            exp_head, exp_count = _resolve_anchor_expectations(args)
+            pack_res = build_proofpack(
+                args.run_id,
+                output_root=args.output_root,
+                keyring=keyring,
+                expected_head=exp_head,
+                expected_count=exp_count,
+                tenant_context=tenant_ctx,
+                out_path=args.out,
+            )
+            _emit_json(pack_res)
+            return EXIT_OK
+
+        if action == "verify-proofpack":
+            vp_res = verify_proofpack(args.proofpack_path, require_promoted=args.require_promoted)
+            _emit_json(vp_res)
+            return EXIT_OK if vp_res["verified"] else EXIT_BLOCKED_OR_ERROR
+
         if action == "artifact":
             art_action = args.artifact_action
             if art_action == "add":
@@ -678,6 +696,32 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
                 )
                 _emit_json({"artifacts": items, "count": len(items)})
                 return EXIT_OK
+            if art_action == "attest":
+                materials: list[dict[str, str]] | None = None
+                if args.material:
+                    materials = []
+                    for item in args.material:
+                        if "=" not in item:
+                            raise ValueError(f"invalid --material {item!r}; expected URI=SHA256")
+                        uri, mat_sha = item.split("=", 1)
+                        materials.append({"uri": uri, "sha256": mat_sha})
+                att_res = artifact.create_build_attestation(
+                    args.file,
+                    builder_id=args.builder_id,
+                    materials=materials,
+                    run_id=args.run_id,
+                    out_path=args.out,
+                )
+                _emit_json(att_res)
+                return EXIT_OK
+            if art_action == "verify-attestation":
+                att_ver = artifact.verify_build_attestation(
+                    args.attestation_json,
+                    subject_path=args.subject,
+                    expected_subject_sha256=args.expected_sha256,
+                )
+                _emit_json(att_ver)
+                return EXIT_OK if att_ver["verified"] else EXIT_CHECK_FAILED
 
     except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         return _emit_error(f"Refinery error: {exc}", exc=exc, json_errors=json_errors, exit_code=EXIT_BLOCKED_OR_ERROR)
@@ -813,6 +857,7 @@ def _build_parser() -> _FoundryArgumentParser:
     anchor_parser.add_argument("run_id", nargs="?", default=None, help="optional run_id to verify before anchoring")
     anchor_parser.add_argument("--output-root", default=None, help="path to runs directory")
     anchor_parser.add_argument("--out", default=None, help="optional output path for anchor JSON")
+    anchor_parser.add_argument("--worm-dir", default=None, help="optional write-once directory AnchorSink")
 
     list_parser = ref_sub.add_parser("list", parents=[common], help="list tracked runs")
     list_parser.add_argument("--output-root", default=None, help="path to runs directory")
@@ -866,6 +911,30 @@ def _build_parser() -> _FoundryArgumentParser:
     compare_parser.add_argument("--n-bootstrap", type=int, default=200, help="bootstrap resamples per seed")
     compare_parser.add_argument("--confidence", type=float, default=0.95, help="confidence interval level")
 
+    proofpack_parser = ref_sub.add_parser(
+        "proofpack",
+        parents=[common],
+        help="build SHA-256-sealed read-only Proofpack v2 for downstream audit",
+    )
+    proofpack_parser.add_argument("run_id", help="run identifier to package")
+    proofpack_parser.add_argument("--output-root", default=None, help="path to runs directory")
+    proofpack_parser.add_argument("--keyring", default=None, help="trusted keyring JSON for signature verification")
+    proofpack_parser.add_argument("--out", default=None, help="optional output path for proofpack JSON")
+    _add_anchor_args(proofpack_parser)
+    _add_tenant_args(proofpack_parser)
+
+    verify_pp_parser = ref_sub.add_parser(
+        "verify-proofpack",
+        parents=[common],
+        help="verify a frozen Proofpack v2 JSON payload",
+    )
+    verify_pp_parser.add_argument("proofpack_path", help="path to Proofpack v2 JSON file")
+    verify_pp_parser.add_argument(
+        "--require-promoted",
+        action="store_true",
+        help="fail closed unless proofpack proves ALLOWED_REVIEW_REQUIRED promotion",
+    )
+
     art_parser = ref_sub.add_parser("artifact", parents=[common], help="content-addressed artifact store operations")
     art_sub = art_parser.add_subparsers(dest="artifact_action", required=True)
 
@@ -887,6 +956,36 @@ def _build_parser() -> _FoundryArgumentParser:
     art_list.add_argument("--output-root", default=None, help="path to runs directory")
     art_list.add_argument("--store-dir", default=None, help="override artifact store directory")
     art_list.add_argument("--run-id", default=None, help="filter by run_id")
+
+    art_attest = art_sub.add_parser(
+        "attest",
+        parents=[common],
+        help="create a SLSA/in-toto JSON provenance attestation for an artifact",
+    )
+    art_attest.add_argument("file", help="subject artifact file path")
+    art_attest.add_argument(
+        "--builder-id",
+        default="hardonian-foundry/offline-builder@v1",
+        help="builder identifier",
+    )
+    art_attest.add_argument("--run-id", default=None, help="optional run_id association")
+    art_attest.add_argument(
+        "--material",
+        action="append",
+        default=None,
+        metavar="URI=SHA256",
+        help="material dependency digest pair (repeatable)",
+    )
+    art_attest.add_argument("--out", default=None, help="optional output path for attestation JSON")
+
+    art_ver_att = art_sub.add_parser(
+        "verify-attestation",
+        parents=[common],
+        help="verify a SLSA/in-toto build attestation JSON",
+    )
+    art_ver_att.add_argument("attestation_json", help="path to attestation JSON file")
+    art_ver_att.add_argument("--subject", default=None, help="optional subject artifact path to verify SHA-256 against")
+    art_ver_att.add_argument("--expected-sha256", default=None, help="optional expected 64-char subject SHA-256")
 
     return parser
 

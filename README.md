@@ -36,9 +36,10 @@ Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos
 | `foundry refinery keygen --out <pem>` | Generate an Ed25519 private key (mode `0600` on POSIX, owner-restricted on Windows) |
 | `foundry refinery sign <run_id>` | Verify `run.json` against seq-1 digest and append `v2` Ed25519 signature |
 | `foundry refinery list` / `diff` | List tracked runs and diff metrics/provenance between runs |
-| `foundry refinery anchor` / `export-bundle` / `verify-bundle` | Emit external head checkpoints and export/verify SHA-256 evidence bundles |
+| `foundry refinery anchor` / `export-bundle` / `verify-bundle` | Emit external/WORM head checkpoints and export/verify SHA-256 evidence bundles |
 | `foundry refinery report` / `compare` | Render JSON/Markdown compliance audit reports and McNemar + bootstrap model comparisons |
-| `foundry refinery artifact {add,verify,list}` | Local content-addressed artifact store with SHA-256 verification |
+| `foundry refinery proofpack` / `verify-proofpack` | Build and verify SHA-256-sealed read-only `Proofpack v2` contracts for downstream consumers |
+| `foundry refinery artifact {add,verify,list,attest,verify-attestation}` | Local content-addressed artifact store and SLSA/in-toto build attestations |
 | `foundry provider` / `provider predict` | Opt-in loopback provider probe & batch JSONL predictions (fails closed to `UNAVAILABLE`) |
 | `foundry registry {list,promote,register,get,verify}` | Fail-closed SHA-256 model registry & promotion gate requiring `--keyring` and verified evidence |
 
@@ -100,7 +101,7 @@ Read this before building on Foundry:
 
 - **Synthetic-first baseline:** Built-in fixtures and case studies use **synthetic data only**. Optional `consented_pilot` / `redacted_eval` tiers in `licensing.py` and `evidence.py` require explicit `governance_attestation` and remain disallowed by default.
 - **Human review is mandatory:** `ALLOWED_REVIEW_REQUIRED` certifies evidence completeness at a verified ledger head—never production accuracy or unattended deployment readiness (`review_rate = 1.0`, `financial_write = false`, `executed = false`).
-- **No production serving or remote KMS/HSM in v1.0:** Foundry is an offline-first evaluation, local SHA-256 registry, and promotion gate, not a production inference gateway, IAM/SSO service, or remote immutable HSM audit service. Pluggable KMS/HSM/Sigstore signing, RFC 3161/WORM anchoring, agentic trajectory gates, and federated proofpacks are tracked in [docs/roadmap.md](docs/roadmap.md).
+- **No production serving or managed cloud KMS/TSA daemon in core package:** Foundry provides pluggable `SignerProvider` / `AnchorSink` (`WormDirectoryAnchorSink`) SPIs, SLSA/in-toto artifact attestations, agentic trajectory & `scan_dataset_pii` gates, `cohens_kappa` / `fleiss_kappa`, local SHA-256 `registry.json`, and frozen read-only `Proofpack v2` contracts. Live production inference gateways, IAM/SSO services, and vendor-specific cloud KMS/TSA adapters remain external SPI plugins tracked in [docs/roadmap.md](docs/roadmap.md).
 - **Loopback provider guard:** The opt-in `provider` adapter defaults to operator-approved loopback origins (optional TLS/bearer env auth requires explicit opt-in), disables redirects/proxies, enforces timeouts/circuit breakers, and never substitutes heuristics on failure (`UNAVAILABLE`).
 - **Synthetic self-consistency is not pilot accuracy:** High synthetic scores (such as `1.000` on closed-vocabulary templates) demonstrate structural gate behavior, not real-world generalization. See [docs/dataset-card.md](docs/dataset-card.md).
 
