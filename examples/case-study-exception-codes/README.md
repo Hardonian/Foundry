@@ -104,6 +104,30 @@ PYTHONPATH=../../src python3 -m hardonian_foundry.cli refinery inspect run-20261
 PYTHONPATH=../../src python3 -m hardonian_foundry.cli refinery promote run-20261111T031107Z-6a0895d1 --output-root task/runs --keyring task/keyring.json
 ```
 
+### Source-distribution replay (installed wheel, no weights)
+
+The **sdist**, not the wheel, carries the frozen synthetic `task/` fixtures and
+public keyring. `MANIFEST.in` lists each asset explicitly; private keys, adapter
+weights, arbitrary generated JSON and private datasets are not included. The
+wheel contains the library/CLI only. Download a source distribution and extract
+it, then, from its root (replace `VERSION` with that archive's version):
+
+```sh
+python -m build --wheel --outdir dist
+python -m venv .replay-venv
+.replay-venv/bin/python -m pip install 'dist/hardonian_foundry-VERSION-py3-none-any.whl[signing]'
+.replay-venv/bin/python -I scripts/verify_packaged_case_study.py
+```
+
+On Windows use `.replay-venv\Scripts\python.exe`. Install `build` first if needed.
+Only the optional signing dependency needs installation; no training stack,
+model downloads or private signing keys are required. The regression verifies
+that imports come from the installed environment (not `src`), replays the
+packaged run, checks unsigned and mutated disposable copies fail closed, and
+checks all original fixture hashes are unchanged. CI builds an sdist, builds the
+wheel **from the extracted sdist**, then runs this same regression. This verifies
+historical evidence integrity, not retraining, external accuracy or deployment.
+
 ### Dataset Stress Profiles (`--profile`)
 
 `generate_dataset.py` preserves exact byte/record parity under `--profile standard --seed 20261110` (1,152 records) while offering two additional deterministic stress profiles for baseline and adapter evaluation:

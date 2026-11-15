@@ -150,11 +150,18 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Build wheel and sdist
+      - name: Build sdist, then wheel from the extracted source distribution
         run: |
           python -m pip install --quiet --upgrade "pip>=26.2"
           python -m pip install --quiet build
-          python -m build
+          python -m build --sdist
+          python - <<'PY'
+          import pathlib, tarfile
+          archive = next(pathlib.Path("dist").glob("*.tar.gz"))
+          with tarfile.open(archive) as source:
+              source.extractall(".sdist-source", filter="data")
+          PY
+          python -m build --wheel --outdir dist .sdist-source/*
       - name: Install wheel into clean venv and run smoke
         run: |
           python -m venv .wheel-venv
@@ -163,6 +170,14 @@ jobs:
           .wheel-venv/bin/foundry --version
           .wheel-venv/bin/foundry doctor
           .wheel-venv/bin/foundry demo
+      - name: Installed wheel plus packaged signed fixture regression (no checkout imports)
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: |
+          .wheel-venv/bin/pip install --quiet 'cryptography>=42.0'
+          .wheel-venv/bin/python -I .sdist-source/*/scripts/verify_packaged_case_study.py
 
   security:
     name: security & static checks
