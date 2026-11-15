@@ -21,7 +21,7 @@ Naive first-generation tool guardrails check whether a forbidden tool name (`she
 On the 240-record family-disjoint test split (720 total records across 12 workflow families, `BASE_SEED=20261111`):
 
 | Predictor | Accuracy | Macro-F1 | Critical False-Negative Rate |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | Naive keyword baseline (`baseline_predict.py`) | 0.4958 | 0.4498 | **0.7563** (121/160 critical misses) |
 | Structural schema + injection gate (`gate_predict.py`) | 1.0000 | 1.0000 | **0.0000** (0/160 critical misses) |
 

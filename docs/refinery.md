@@ -13,7 +13,7 @@ The Refinery workflow connects dataset validation, training preflight, reproduci
 
 ## Workflow Components
 
-```
+```text
                     ┌─────────────────────────┐
                     │    Synthetic Dataset    │
                     └────────────┬────────────┘
@@ -55,6 +55,7 @@ The Refinery workflow connects dataset validation, training preflight, reproduci
 ```
 
 ### 1. Dataset Validation (`validate-dataset`)
+
 Validates integer minor units, synthetic ID prefixes (`synthetic-`), maximum ID lengths (`<= 100`), absence of duplicate IDs, and absence of identical content across differing IDs (leakage hazard). In `--task-spec` mode, validates the frozen spec contract, traversal-free relative `dataset_path` (POSIX and Windows paths), label coverage, and deterministic group-disjoint splits.
 
 ```sh
@@ -63,7 +64,9 @@ foundry refinery validate-dataset --task-spec <spec.json>
 ```
 
 ### 2. Training Preflight (`preflight`)
+
 Executes diagnostic checks prior to executing a run or training task:
+
 - Validates the target built-in/custom dataset or `--task-spec` task dataset.
 - Verifies Python runtime (`>= 3.11`) and offline CPU mode.
 - Validates the output directory (mode `0700` on POSIX, owner/ACL check on Windows) and storage headroom.
@@ -75,6 +78,7 @@ foundry refinery preflight [--data <path>] [--task-spec <spec.json>] [--output-r
 ```
 
 ### 3. End-to-End Run Execution (`run`)
+
 Performs preflight checks, executes reproducible held-out evaluation (or scores external task-mode predictions), creates a private run directory (`run-<timestamp>-<random_hex>`), stores a portable relative `"evidence.jsonl"` ledger path in `run.json`, records `run_record_sha256` into the tamper-evident evidence ledger, and writes `run.json`.
 
 ```sh
@@ -83,6 +87,7 @@ foundry refinery run --task-spec <spec.json> --baseline-predictions <baseline.js
 ```
 
 ### 4. Run Inspection, Listing & Diffing (`inspect`, `list`, `diff`)
+
 - **`inspect`:** Replays the ledger hash chain from `GENESIS`, safely resolves `root_dir / "evidence.jsonl"` when inspecting cloned runs (rejecting traversal or paths outside `root_dir`), and optionally verifies external rollback pins (`--expected-head`, `--expected-count`) or tenant context (`--tenant-id`, `--request-id`).
 - **`list`:** Lists recorded runs under `--output-root`, with optional status/task filtering and inline chain verification.
 - **`diff`:** Compares metrics, thresholds, dataset hashes, and provenance between two run IDs.
@@ -94,6 +99,7 @@ foundry refinery diff <run_a> <run_b> --output-root .foundry/runs
 ```
 
 ### 5. External Anchoring, Bundle Verification, Proofpacks & Audit Reports (`anchor`, `export-bundle`, `verify-bundle`, `report`, `proofpack`, `verify-proofpack`)
+
 Because a local append-only ledger cannot by itself detect an attacker rolling back the entire directory to an earlier signed snapshot, Foundry provides external head anchoring (including `WormDirectoryAnchorSink` via `--worm-dir`), portable bundle export/verification, deterministic audit reports, and read-only `Proofpack v2` sealing:
 
 ```sh
@@ -108,6 +114,7 @@ foundry refinery verify-proofpack <proofpack.v2.json> [--require-promoted]
 Pass the recorded anchor digest to `inspect`, `promote`, `report`, `proofpack`, or `registry promote` via `--expected-head <hex>` (and `--expected-count <n>`) or `--anchor <anchor.json>` to fail closed on rollback.
 
 ### 6. Content-Addressed Artifacts & SLSA Attestations (`artifact`)
+
 Manages local content-addressed artifacts with SHA-256 verification and SLSA/in-toto build provenance statements:
 
 ```sh
@@ -119,7 +126,9 @@ foundry refinery artifact verify-attestation <att.json> [--subject <file>] [--ex
 ```
 
 ### 7. Promotion Gate (`promote`)
+
 Evaluates whether a candidate model run possesses all required evidence for promotion:
+
 - **Run Metadata:** `run.json` exists, parses cleanly, and `run_id` passes strict traversal checks.
 - **Provenance Proof:** Evidence ledger verifies with `PROVENANCE_VERIFIED` (and matches `--expected-head` / `--expected-count` / `--anchor` when supplied).
 - **Preflight:** Training preflight passed cleanly.
@@ -134,7 +143,9 @@ foundry refinery promote <run_id> --output-root .foundry/runs --keyring keyring.
 ```
 
 ### 8. Signing & Keyring (`keygen`, `attach-license`, `sign`)
+
 Promotion attestations are Ed25519 signatures over the canonical run digest and ledger head (`signing.py`):
+
 - `keygen --out <path>` (also accepts `--key-file <path>` alias) creates a new Ed25519 private key file (refuses to overwrite; mode forced to `0600` on POSIX, protected owner-only DACL on Windows).
 - `attach-license <run_id> --manifest m.json` binds the SPDX allowlist decision into the ledger (once per run).
 - `sign <run_id> --key-file k.pem [--cosign]` verifies `run.json` matches the seq-1 ledger `run_record_sha256` before appending a `promotion_signature` entry covering the ledger head.
@@ -147,7 +158,9 @@ foundry refinery sign <run_id> --key-file sign.pem --output-root .foundry/runs
 ```
 
 ### 9. Task-Mode Evaluation & Paired Comparison (`task_eval.py`, `compare`)
+
 Task mode scores externally produced predictions against a frozen task contract (`spec.json`) without executing models inside Foundry:
+
 - **Spec:** `task_id`, `labels`, `thresholds` (`macro_f1_min >= 0.8` plus optional `critical_fn_rate_max`, `per_class_recall_min`, `invalid_output_rate_max`, `latency_p95_ms_max`), `baseline_must_improve`, `split_seed`, `model` (`base_model_id`, `revision`, `adapter_sha256`, `adapter_name`), and relative `dataset_path`.
 - **Dataset (JSONL):** `{"id", "prompt", "gold_label", "critical", "family"?}` with deterministic group-disjoint ~60/15/25 splits.
 - **Predictions (JSONL):** `{"id", "label"}` (with optional `"confidence"`, `"latency_ms"`, `"abstained"`, `"raw_invalid"`) with exact test-ID coverage.
@@ -158,10 +171,12 @@ foundry refinery compare --task-spec spec.json [--data dataset.jsonl] --baseline
 ```
 
 ### 10. Opt-in Provider Adapter (`provider`, `provider predict`)
+
 - **`foundry provider --origin <url> --model <id>`:** Single-record loopback probe (`probe`) with redirects/proxies disabled, response byte cap, circuit breaker, and strict total deadline.
 - **`foundry provider predict ...`:** Batch prediction generator writing `{id, label}` JSONL with fail-closed `--fallback-label UNDETERMINED` / `UNAVAILABLE` handling (never substituting heuristics on provider errors). Supports `--task-spec`, `--data`, `--labels`, `--split`, `--out`, `--failure-threshold`, plus opt-in `--allow-tls`, `--allow-remote`, `--ca-bundle`, and `--auth-token-env`.
 
 ### 11. Fail-Closed Model Registry (`registry list`, `promote`, `register`, `get`, `verify`)
+
 Manages registered model candidates backed by verified refinery evidence in an atomic SHA-256-checksummed `registry.json`:
 
 ```sh
@@ -177,12 +192,13 @@ foundry registry promote [model_id] --output-root .foundry/runs --keyring keyrin
 ## Exit Codes & Global Flags
 
 | Command / Outcome | Exit Code | Meaning |
-|---|---:|---|
+| --- | ---: | --- |
 | Success (`doctor`, `demo`, `run`, `inspect` verified, `promote` `ALLOWED_REVIEW_REQUIRED`, `validate-dataset` `VALID`, `preflight` `PASSED`, `attach-license` `ALLOWED`, `sign`, `keygen`, `anchor`, `export-bundle`, `verify-bundle`, `report`, `compare`, `proofpack`, `verify-proofpack`, `artifact {add,verify,list,attest,verify-attestation}`, `registry list/register/get/verify`) | `0` | Completed and verified |
 | Validation / Preflight / Inspection / Attestation check / Provider Unavailable failure | `1` | Invalid dataset, failed preflight, tampered ledger, failed `artifact verify` / `verify-attestation`, or provider `UNAVAILABLE` |
 | Fail-closed Gate / Configuration / CLI Input Error (`promote` `BLOCKED`, `registry promote/register/verify` failure, `verify-bundle` / `verify-proofpack` failure, invalid args, traversal/missing files, failed anchor/quorum) | `2` | Promotion blocked or fail-closed safety/input error |
 
 Global CLI utilities:
+
 - `foundry --version` (or `python -m hardonian_foundry --version`) — print package version
 - `foundry --json-errors ...` — emit structured JSON error objects on stderr
 - `foundry doctor [--verbose]` — offline runtime and optional-extra diagnostics (`signing`, `train` availability)

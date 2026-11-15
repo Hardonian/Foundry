@@ -5,7 +5,8 @@ based on Keep a Changelog; this project uses Semantic Versioning.
 
 ## [1.0.0] - 2026-11-14
 
-### Added
+### Added (1.0.0)
+
 - **Productized Public Python SDK & Packaging (`v1.0.0`):**
   - Exported a cohesive public SDK via `hardonian_foundry.__all__` (`artifact`, `canonical`, `evidence`, `provider`, `refinery`, `registry`, `task_eval`, `tenancy`) while preserving zero-extra imports without `[signing]` or `[train]` installed.
   - Added PEP 561 `py.typed` marker (`package-data` + `MANIFEST.in`), `python -m hardonian_foundry` entrypoint (`__main__.py`), and PEP 621 `keywords`, `classifiers`, and `[project.urls]` metadata in `pyproject.toml`.
@@ -24,7 +25,8 @@ based on Keep a Changelog; this project uses Semantic Versioning.
   - `task_eval.py`: Added `cohens_kappa`, `fleiss_kappa`, `evaluate_trajectories` (`false_tool_execution_rate == 0.0` & unsafe arg/tool gates), and `scan_dataset_pii` (pre-ingestion PII/secret scanner without raw leak echoes).
   - `proofpack.py` & `cli.py`: Added frozen read-only `Proofpack v2` (`build_proofpack`, `verify_proofpack`, `foundry refinery {proofpack,verify-proofpack}`) for downstream audit consumers.
 
-### Changed
+### Changed (1.0.0)
+
 - Bumped package version to `1.0.0` in `pyproject.toml`, `src/hardonian_foundry/__init__.py`, and `scripts/make_social_preview.py`.
 - Updated `README.md`, `docs/architecture.md`, and `docs/refinery.md` to reflect `1.0.0` CLI/SDK contracts and link `docs/roadmap.md`.
 
@@ -34,7 +36,8 @@ Cross-platform Windows/macOS/Linux hardening, modular Refinery architecture,
 external rollback anchoring, M-of-N keyring quorum, batched offline training
 utilities, and two new zero-weight runnable case studies.
 
-### Added
+### Added (0.3.0)
+
 - **Core Ledger & Canonical Serialization:**
   - `canonical.py`: single-pass canonical JSON serializer (`canonical`) and SHA-256 digest (`digest`) rejecting non-string keys, circular refs, and `NaN`/`Infinity`.
   - `evidence.py`: `EvidenceStore` protocol, `JsonlEvidenceStore`, WAL-backed `SQLiteEvidenceStore`, `checkpoint()` helper, and `allowed_origins` policy gating (defaulting strictly to `("synthetic",)`).
@@ -55,21 +58,25 @@ utilities, and two new zero-weight runnable case studies.
   - `pyproject.toml` extras (`dev`, `train`, `all`) plus `[tool.ruff]`, `[tool.pytest.ini_options]`, `[tool.mypy]`, and `[tool.coverage]` configuration.
   - Multi-OS × Python (`ubuntu-latest`, `windows-latest`, `macos-latest` × `3.11`, `3.12`, `3.13`) CI matrix, `mypy src`, `pytest --cov`, `no-signing-extra` fail-closed job, wheel install smoke, cloned case-study replay smoke, and expanded `bandit`.
 
-### Changed
+### Changed (0.3.0)
+
 - **Performance & Portability:** Replaced `O(N^2)` ledger rewrite on append with crash-safe tail append; replaced per-call `python -I` subprocess spawns in `provider.py` with deadline-enforced socket/HTTP connection handling, circuit breaker, and structured `UNAVAILABLE` codes; stored portable relative `"evidence.jsonl"` on new runs while resolving `root_dir / "evidence.jsonl"` safely for cloned legacy runs.
 - **Training Scripts:** Fixed `grad_accum` trailing remainder step and silent truncation in `train_lora.py`, fixed `to_label()` prefix collisions and added batched inference in `model_predict.py`, and fixed split range leaks plus added validation monitoring in `experiment_balanced_lora.py`.
 
-### Fixed
+### Fixed (0.3.0)
+
 - **Windows Compatibility:** Fixed `signing.py` POSIX-only `0o077` permission checks, `evidence.py` `msvcrt.LK_LOCK` retry limits, `training_utils.py` `os.getuid()` / `os.sysconf` crashes, and `task_eval.validate_spec` Windows traversal (`\`, drive letters).
 - **Security Hardening:** Verified `run.json` against seq-1 `run_record_sha256` before `sign_run`; strictly rejected traversal in `run_id`; fixed `docs/refinery.md` `keygen --out` flag reference; replaced `time.monotonic()` in `run_id` generation with `secrets.token_hex(6)`.
 
-### Known Gaps / Boundaries
+### Known Gaps / Boundaries (0.3.0)
+
 - Synthetic datasets remain the default; `consented_pilot` / `redacted_eval` origins require explicit `governance_attestation` and human review (`ALLOWED_REVIEW_REQUIRED` never auto-deploys).
 - Remote KMS/HSM signing, write-once remote anchoring, and production serving gateways remain external to Foundry.
 
 ## [0.2.1] - 2026-11-10
 
-### Security
+### Security (0.2.1)
+
 - Fix promotion evidence validation: version 2 signatures bind the complete
   canonical run record and the ledger head at signing, including prior license
   evidence. A trusted keyring is required for signature verification.
@@ -93,7 +100,8 @@ can now say ALLOWED — but only when every piece of evidence verifies, and the
 decision is still `ALLOWED_REVIEW_REQUIRED` (a human signs off; nothing
 auto-promotes).
 
-### Added
+### Added (0.2.0)
+
 - Task-mode evaluation (`task_eval.py`): frozen task-spec contracts, JSONL
   datasets/predictions, deterministic group-disjoint 60/15/25 splits,
   per-class P/R/F1 + macro-F1 + critical-false-negative scoring
@@ -110,7 +118,8 @@ auto-promotes).
 - 23 new tests (109 total), including tamper-after-sign, untrusted-key,
   no-improvement, denied-license and world-readable-key rejection paths
 
-### Changed
+### Changed (0.2.0)
+
 - Promotion gate: `ALLOWED_REVIEW_REQUIRED` (exit 0) replaces always-BLOCKED
   when all evidence verifies; any missing/unverified item still exits 2 with
   exact `missing_evidence` reasons
@@ -121,7 +130,8 @@ auto-promotes).
 First public baseline release. Everything in this version is offline,
 CPU-only, and synthetic; see README "Honest status".
 
-### Added
+### Added (0.1.0)
+
 - `refinery` workflow: `validate-dataset`, `preflight`, `run`, `inspect`, `promote`
 - Hash-chained, tamper-evident run ledger (`evidence.jsonl`) with per-run provenance
 - Fail-closed promotion gate with explicit missing-evidence reasons (always BLOCKED at 0.1.0, by design)
@@ -133,7 +143,8 @@ CPU-only, and synthetic; see README "Honest status".
 - CI (`offline-baseline`): 86 unit tests, synthetic smoke, refinery smoke, compileall,
   ruff, bandit, pip-audit, gitleaks — all actions pinned to full commit SHAs
 
-### Known gaps (intentionally loud, not hidden)
+### Known gaps (0.1.0 — intentionally loud, not hidden)
+
 - No signed provenance, licensing-manifest or benchmark promotion gates yet
   → `refinery promote` fails closed with the exact missing artifacts listed
 - No production API, tenant isolation, inference server or model registry

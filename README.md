@@ -24,7 +24,7 @@ Promotion is the interesting output. Missing or invalid evidence blocks it (`BLO
 Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos-latest`) and verified offline on every push:
 
 | Command | What it does |
-|---|---|
+| --- | --- |
 | `foundry --version` / `doctor [--verbose]` | Package version and offline environment/extra diagnostics |
 | `foundry demo` / `eval` / `policy-demo` | Deterministic synthetic reconciliation & tool-policy demonstrations |
 | `foundry refinery validate-dataset` | Integrity, uniqueness, leakage, and splitability checks (`--data` or `--task-spec`) |
@@ -65,6 +65,7 @@ report = hf.generate_audit_report("<run_id>", output_root=".foundry/runs", fmt="
 ```
 
 Optional extras in [pyproject.toml](pyproject.toml):
+
 - `.[signing]` — Ed25519 signing/verification (`cryptography`)
 - `.[dev]` — signing + `pytest`, `pytest-cov`, `ruff`, `mypy`, `bandit`, `build`, `pillow`, `pyyaml`
 - `.[train]` — offline LoRA training stack (`torch`, `transformers`, `peft`, `accelerate`, `safetensors`)
@@ -73,7 +74,7 @@ Optional extras in [pyproject.toml](pyproject.toml):
 ## Worked Case Studies
 
 | Case Study | Offline Weights Needed? | What It Demonstrates |
-|---|---|---|
+| --- | --- | --- |
 | [examples/case-study-exception-codes](examples/case-study-exception-codes/README.md) | Optional (committed signed evidence replays offline) | Qwen2.5-Coder-0.5B LoRA vs Settler keyword regex, plus `standard`, `adversarial-noisy`, and `imbalanced` (4% critical) dataset profiles |
 | [examples/case-study-agent-tool-gate](examples/case-study-agent-tool-gate/README.md) | **None** (runs in seconds) | Agent tool-call safety (`ALLOW_PROPOSAL`, `DENY`, `ESCALATE_REVIEW`) against prompt injection, path traversal, and argument smuggling |
 | [examples/case-study-reconciliation-policy](examples/case-study-reconciliation-policy/README.md) | **None** (runs in seconds) | `synthetic_policy.assess_with_suggestion` deterministic minor-unit arithmetic overriding untrusted model suggestions |
@@ -88,14 +89,14 @@ PYTHONPATH=src python3 -m hardonian_foundry.cli refinery promote run-20261111T03
 ## Documentation
 
 | Document | Covers |
-|---|---|
+| --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Mermaid architecture/sequence diagrams, module boundaries, threat model, `task_eval` / `signing` / `training_utils` contracts |
 | [docs/refinery.md](docs/refinery.md) | Full refinery CLI reference, gate semantics, exit codes, anchoring, Windows/POSIX behavior |
 | [docs/training.md](docs/training.md) | Cross-platform preflight, batched CPU LoRA training/eval, model registry config, DPO/RLVR/GPU adapter contracts |
 | [docs/dataset-card.md](docs/dataset-card.md) | Dataset taxonomies, spurious-shortcut warnings, and consented pilot migration checklist |
 | [docs/roadmap.md](docs/roadmap.md) | Long-term product roadmap (`v1.0.0` shipped through `v2.0` KMS/WORM/agentic/federated proofpacks) |
 
-## Honest Status & Long-Term Roadmap (v1.0.0)
+## Honest status
 
 Read this before building on Foundry:
 

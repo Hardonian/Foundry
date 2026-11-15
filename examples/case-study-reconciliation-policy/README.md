@@ -19,7 +19,7 @@ Calling `assess_with_suggestion(case, suggestion)` computes `assess(case)` deter
 On the 192-record family-disjoint test split (576 total records across 12 synthetic feed families, `BASE_SEED=20261112`):
 
 | Predictor | Accuracy | Macro-F1 | Critical False-Negative Rate |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | Untrusted-suggestion baseline (`baseline_predict.py`) | 0.3333 | 0.3444 | **0.6250** (80/128 critical misses) |
 | Deterministic policy gate (`policy_predict.py` via `assess_with_suggestion`) | 1.0000 | 1.0000 | **0.0000** (0/128 critical misses) |
 

@@ -9,16 +9,19 @@ This document describes the synthetic datasets shipped with **Foundry**, their l
 ## 1. Dataset Inventory & Taxonomies
 
 ### 1.1 Built-in Baseline Dataset (`baseline.py`)
+
 - **Size:** 60 synthetic records (`synthetic-000` .. `synthetic-059`).
 - **Schema:** `{"id", "expected_minor", "actual_minor", "critical"}` using bounded integer minor units (`abs(x) <= 10^12`).
 - **Deterministic split:** 60% train (36) / 20% validation (12) / 20% test (12), seed `42`.
 - **Purpose:** Offline smoke testing, integer minor-unit invariants, and CI self-consistency (`foundry demo`, `foundry eval`, `foundry refinery run`).
 
 ### 1.2 Case Study #1: Exception Resolution Codes (`examples/case-study-exception-codes/`)
+
 - **Task ID:** `settler-exception-resolution-codes`
 - **Gold labels (8):**
+
   | Label | Critical | Meaning |
-  |---|---|---|
+  | --- | --- | --- |
   | `DUPLICATE_RECORD_CONFIRMED` | No | Same transaction/invoice imported more than once |
   | `TIMING_DIFFERENCE_ACCEPTED` | No | Settlement window or cutoff timing explains variance |
   | `AMOUNT_VARIANCE_ACCEPTED` | No | Known fee, tax, or rounding delta accepted |
@@ -27,12 +30,14 @@ This document describes the synthetic datasets shipped with **Foundry**, their l
   | `FALSE_POSITIVE_CONFIRMED` | No | Expected gap / benign alert |
   | `REOPENED_FOR_INVESTIGATION` | **Yes** | Unresolved discrepancy requiring escalation (`critical: true`) |
   | `UNDETERMINED` | No | Insufficient/conflicting information; honest fallback class |
+
 - **Profiles (`generate_dataset.py --profile`):**
   - `standard` (default): **1,152 records** (`12` style families × `12` archetypes × `8` slot variants; `41.67%` critical), matching committed `task/data.jsonl`. Four archetypes embed adversarial first-match regex traps.
   - `adversarial-noisy`: **1,152 records** (`12` style families × `12` archetypes × `8` variants; `33.33%` critical) injecting operator typos (`impoted`, `settlment`, `investgation`, `missng`, `varience`), abbreviations (`ccy`, `amt`, `dup`, `reconcil`, `fp`), negation flips, multi-sentence conflicts, and near-tie ambiguous `UNDETERMINED` notes.
   - `imbalanced`: **1,200 records** (`12` style families × `100` records/family; **4.0% critical** = `24` `REOPENED_FOR_INVESTIGATION` + `24` `MISSING_COUNTERPART_CONFIRMED`) demonstrating how high macro-F1 (`0.894` for the keyword baseline) can conceal a `0.5625` critical false-negative rate.
 
 ### 1.3 Case Study #2: Agent Tool-Call Safety Gate (`examples/case-study-agent-tool-gate/`)
+
 - **Task ID:** `agent-tool-call-safety-gate`
 - **Size:** **720 records** (`12` workflow families × `15` scenario archetypes × `4` slot variants; `BASE_SEED=20261111`).
 - **Gold labels (3):**
@@ -42,6 +47,7 @@ This document describes the synthetic datasets shipped with **Foundry**, their l
 - **Zero-weight offline runnable:** Uses `gate_predict.py` vs `baseline_predict.py` without requiring HF weights.
 
 ### 1.4 Case Study #3: Reconciliation Policy Override (`examples/case-study-reconciliation-policy/`)
+
 - **Task ID:** `reconciliation-arithmetic-policy-override`
 - **Size:** **576 records** (`12` synthetic feed families × `12` archetypes × `4` variants; `BASE_SEED=20261112`).
 - **Gold labels (3):** Computed deterministically via `hardonian_foundry.synthetic_policy.assess`:

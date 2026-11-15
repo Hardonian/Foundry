@@ -44,6 +44,7 @@ python examples/case-study-exception-codes/train_lora.py \
 ```
 
 Key behaviors and flags:
+
 - **Fail-Closed Truncation Guard:** Rejects training runs if `--max-seq` truncates any encoded training example (rather than silently dropping label tokens).
 - **Exact Gradient Accumulation Remainder (`grad_accum_window_size`, `should_step_grad_accum`):** Rescales trailing micro-batches cleanly when `len(train_rows)` is not evenly divisible by `--grad-accum`.
 - **Padded Micro-Batching & LR Schedule:** Dynamic micro-batching (`--batch-size`), scheduler options (`--scheduler`, `--warmup-ratio`, `--max-grad-norm`), validation monitoring (`--eval-val` / `--no-eval-val`), and checkpointing (`--save-checkpoints`, `--resume`).
@@ -72,6 +73,7 @@ python examples/case-study-exception-codes/model_predict.py \
 ```
 
 Key behaviors:
+
 - **Pre-Inference Integrity Verification:** Verifies `dataset_sha256`, `spec_sha256`, `base_weights_sha256`, and `adapter_sha256` against `train_manifest.json` and `spec.json` before decoding (supports `--base-only` for zero-shot baseline comparison).
 - **Left-Padded Batched Decoding (`torch.inference_mode()`, `batched_greedy_generate`):** Generates predictions in batches (`--batch-size`) with optional constrained decoding (`--constrained` via `LabelPrefixTrie` / `PrefixTrieLogitsProcessor`), recording per-case `latency_ms`, `confidence`, `raw_invalid`, and `latency_p95_ms` in `predict_manifest.json`.
 - **Boundary-Safe Allowlist Normalization (`to_label`):** Distinguishes `exact_allowlist_outputs`, `normalized_outputs`, and `mapped_to_undetermined`, preventing prefix collisions (e.g., `FOO` vs `FOO_BAR`). Unparseable generations fail closed to `UNDETERMINED`.
@@ -83,7 +85,7 @@ Case-study helpers (`baseline_predict.py` and `show_pubkey.py`) also support `--
 ## 4. Synthetic Smoke, Validation Monitoring & OOD Challenge Scripts
 
 | Script | Purpose |
-|---|---|
+| --- | --- |
 | `scripts/train_synthetic_lora.py` | Bounded offline CPU smoke (`--batch-size`, `--device`, `--model-registry`) comparing teacher-forced base vs. adapter loss and reload agreement |
 | `scripts/evaluate_synthetic_lora.py` | Greedy generation on smoke cases (`--batch-size`, `--device`, `--model-registry`) checking model, dataset, adapter-weight, and adapter-config hashes |
 | `scripts/experiment_balanced_lora.py` | Group-disjoint balanced experiment (train / validation / held-out test) with per-epoch validation tracking, early stopping, `--emit-task-dir`, `--run-refinery`, and `--refinery-output-root` |
@@ -96,5 +98,6 @@ Case-study helpers (`baseline_predict.py` and `show_pubkey.py`) also support `--
 ## 5. Device & Post-Training Adapter Contracts (`qlora`, `dpo`, `rlvr`)
 
 `training_utils.py` (`get_training_hook`, `SFTAdapterHook`, `QLoRAAdapterHook`, `DPOAdapterHook`, `RLVRAdapterHook`, `compute_dpo_loss`, `RLVRVerifier`, `ExactMatchVerifier`) defines modular adapter interfaces across:
+
 - **Devices (`select_device`):** `cpu` (default, verified in offline CI), `cuda`, `mps`, `dml`, and `auto`.
 - **Adapter Methods:** `lora` / `sft` (active offline CPU default), plus structured contracts for `qlora`, `dpo`, and `rlvr`. Check `train_lora.py --help` and runner behavior before invoking non-default post-training modes; verify optional quantization/GPU packages (`bitsandbytes`, CUDA `torch`, etc.) in an isolated environment as they are not bundled or exercised in CPU-only CI runners.

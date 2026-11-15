@@ -29,7 +29,7 @@ On the frozen adversarial test split of this synthetic dataset, the ported
 baseline scores:
 
 | Predictor | top-1 | macro-F1 | critical false-negative rate |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Keyword regex (Settler port, first-match-wins) | 0.750 | 0.7875 | **0.600** (96/160 critical notes miscoded) |
 | Qwen2.5-Coder-0.5B-Instruct + LoRA r=8 | 1.000 | 1.000 | **0.000** (0/160) |
 
@@ -69,7 +69,7 @@ before the operator's actual decision. Critical codes:
 
 ## Evidence chain (all committed)
 
-```
+```text
 seq 1  run record           3f3d071c2d19…   (frozen split, dual scoring, gates PASS at metric level)
 seq 2  model_licensing_manifest  93844bb27be0…   (Apache-2.0, decision ALLOWED, manifest sha d0f6a185…)
 seq 3  promotion_signature  afec55be6283…   Ed25519 over the run record + ledger head 93844bb27be0…
@@ -109,7 +109,7 @@ PYTHONPATH=../../src python3 -m hardonian_foundry.cli refinery promote run-20261
 `generate_dataset.py` preserves exact byte/record parity under `--profile standard --seed 20261110` (1,152 records) while offering two additional deterministic stress profiles for baseline and adapter evaluation:
 
 | Profile | Records | Critical Share | Baseline Macro-F1 | Baseline Critical FN Rate | What It Tests |
-|---|---:|---:|---:|---:|---|
+| --- | ---: | ---: | ---: | ---: | --- |
 | `standard` (default) | 1,152 | 41.67% | 0.7875 | 0.6000 | First-match keyword ordering traps across 12 style families |
 | `adversarial-noisy` | 1,152 | 33.33% | 0.4792 | 1.0000 | Typos, abbreviations (`ccy`/`amt`/`dup`/`reconcil`), negation flips, multi-sentence conflicts, near-tie `UNDETERMINED` notes |
 | `imbalanced` | 1,200 | 4.00% | 0.8940 | 0.5625 | Rare critical escalations masked by high aggregate macro-F1 |
