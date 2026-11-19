@@ -4,3 +4,22 @@ recursive-include docs *.md *.cast *.gif *.png
 recursive-include evals *.py *.yaml *.md
 recursive-include scripts *.py
 recursive-include examples *.py *.md *.sh
+# Frozen synthetic signed-case-study replay assets only. Never glob task trees:
+# locally generated keys, model weights and private datasets must stay excluded.
+include examples/case-study-exception-codes/task/attach_license.json
+include examples/case-study-exception-codes/task/baseline.jsonl
+include examples/case-study-exception-codes/task/data.jsonl
+include examples/case-study-exception-codes/task/inspect.json
+include examples/case-study-exception-codes/task/inspect_final.json
+include examples/case-study-exception-codes/task/keyring.json
+include examples/case-study-exception-codes/task/manifest.json
+include examples/case-study-exception-codes/task/model.jsonl
+include examples/case-study-exception-codes/task/predict_manifest.json
+include examples/case-study-exception-codes/task/promote_blocked.json
+include examples/case-study-exception-codes/task/promote_final.json
+include examples/case-study-exception-codes/task/run.json
+include examples/case-study-exception-codes/task/sign.json
+include examples/case-study-exception-codes/task/spec.json
+include examples/case-study-exception-codes/task/validate.json
+include examples/case-study-exception-codes/task/runs/evidence.jsonl
+include examples/case-study-exception-codes/task/runs/run-20261111T031107Z-6a0895d1/run.json
