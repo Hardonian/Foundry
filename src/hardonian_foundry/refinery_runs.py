@@ -19,6 +19,7 @@ from . import tenancy
 from .baseline import dataset as default_dataset
 from .baseline import reconciliation
 from .canonical import digest
+from .compliance import evaluate_compliance_profile, render_audit_html
 from .evidence import append as evidence_append
 from .evidence import verify_entries as evidence_verify_entries
 from .refinery_preflight import run_preflight
@@ -32,6 +33,9 @@ from .refinery_validation import (
     validate_run_id,
 )
 from .task_eval import (
+    load_jsonl,
+    load_predictor_dataset,
+    scan_dataset_pii,
     score_predictions,
     split_task_dataset,
     validate_spec,
@@ -987,6 +991,97 @@ def _render_audit_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def generate_dataset_card(
+    task_spec_path: str | Path,
+    *,
+    data_path: str | Path | None = None,
+    out_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Generate a SHA-256-pinned dataset card combining validation, PII scan, and split skew metrics."""
+    spec_file = Path(task_spec_path).resolve()
+    raw_spec = json.loads(spec_file.read_text(encoding="utf-8"))
+    spec_errors = validate_spec(raw_spec)
+    if spec_errors:
+        raise ValueError(f"invalid task spec: {'; '.join(spec_errors)}")
+
+    if data_path is not None:
+        records = load_jsonl(data_path)
+    else:
+        records, _ = load_predictor_dataset(raw_spec, spec_file.parent)
+
+    validation = validate_task_dataset(records, raw_spec)
+    pii = scan_dataset_pii(records)
+
+    label_counts: dict[str, int] = {lbl: 0 for lbl in raw_spec["labels"]}
+    families: set[str] = set()
+    critical_count = 0
+    for rec in records:
+        gold = rec.get("gold_label")
+        if isinstance(gold, str):
+            label_counts[gold] = label_counts.get(gold, 0) + 1
+        if rec.get("critical") is True:
+            critical_count += 1
+        fam = rec.get("family")
+        if isinstance(fam, str) and fam:
+            families.add(fam)
+
+    total = len(records)
+    critical_share = round(critical_count / total, 6) if total else 0.0
+    card_core: dict[str, Any] = {
+        "schema_version": "1.0",
+        "task_id": raw_spec["task_id"],
+        "description": raw_spec.get("description", ""),
+        "data_origin": "synthetic",
+        "record_count": total,
+        "family_count": len(families),
+        "critical_count": critical_count,
+        "critical_share": critical_share,
+        "label_distribution": label_counts,
+        "validation_status": validation.get("status"),
+        "validation_errors": validation.get("errors", []),
+        "pii_status": pii.get("status"),
+        "pii_clean": bool(pii.get("clean")),
+        "pii_violation_count": pii.get("violation_count", 0),
+        "dataset_sha256": pii.get("dataset_sha256"),
+        "spec_sha256": digest(raw_spec),
+        "review_required": True,
+    }
+    card_sha256 = digest(card_core)
+    md_lines = [
+        f"# Foundry Dataset Card: `{card_core['task_id']}`",
+        "",
+        f"- **Data Origin:** `{card_core['data_origin']}`",
+        f"- **Records:** `{total}` (`families={len(families)}`, `critical_share={critical_share:.2%}`)",
+        f"- **Validation Status:** `{card_core['validation_status']}`",
+        f"- **PII Pre-Gate:** `{card_core['pii_status']}` (`violations={card_core['pii_violation_count']}`)",
+        f"- **Dataset SHA-256:** `{card_core['dataset_sha256']}`",
+        f"- **Spec SHA-256:** `{card_core['spec_sha256']}`",
+        f"- **Card SHA-256:** `{card_sha256}`",
+        "",
+        "## Label Distribution",
+        "",
+        "| Label | Count |",
+        "| --- | ---: |",
+        *[f"| `{lbl}` | {label_counts[lbl]} |" for lbl in sorted(label_counts)],
+        "",
+    ]
+    card: dict[str, Any] = {**card_core, "card_sha256": card_sha256, "markdown": "\n".join(md_lines)}
+
+    if out_path is not None:
+        raw_out = str(out_path)
+        if not raw_out or any(ord(ch) < 32 for ch in raw_out):
+            raise ValueError("out_path must be a clean non-empty path")
+        if any(part == ".." for part in re.split(r"[/\\]", raw_out)):
+            raise ValueError("out_path contains path traversal")
+        dest = Path(out_path).resolve()
+        if dest.suffix.lower() == ".md":
+            _write_text_atomic(dest, str(card["markdown"]))
+        else:
+            _write_json_atomic(dest, card)
+        card["saved_path"] = str(dest)
+    return card
+
+
 def generate_audit_report(
     run_id: str,
     *,
@@ -997,10 +1092,11 @@ def generate_audit_report(
     tenant_context: TenantContext | None = None,
     fmt: str = "json",
     out_path: str | Path | None = None,
+    compliance_profile: str | None = None,
 ) -> dict[str, Any]:
-    """Generate a deterministic JSON and Markdown compliance audit report for a tracked run."""
-    if fmt not in ("json", "markdown"):
-        raise ValueError(f"unsupported report format {fmt!r}; expected 'json' or 'markdown'")
+    """Generate a deterministic JSON, Markdown, or HTML compliance audit report for a tracked run."""
+    if fmt not in ("json", "markdown", "html"):
+        raise ValueError(f"unsupported report format {fmt!r}; expected 'json', 'markdown', or 'html'")
     if tenant_context is not None and not isinstance(tenant_context, TenantContext):
         raise ValueError("tenant_context must be a TenantContext instance")
 
@@ -1059,7 +1155,11 @@ def generate_audit_report(
         "reasons": promo["reasons"],
         "evaluation_summary": eval_summary,
     }
+    if compliance_profile is not None:
+        report["compliance"] = evaluate_compliance_profile(report, compliance_profile)
     report["markdown"] = _render_audit_markdown(report)
+    if fmt == "html":
+        report["html"] = render_audit_html(report)
 
     if out_path is not None:
         raw_out = str(out_path)
@@ -1070,6 +1170,8 @@ def generate_audit_report(
         dest = Path(out_path).resolve()
         if fmt == "markdown":
             _write_text_atomic(dest, str(report["markdown"]))
+        elif fmt == "html":
+            _write_text_atomic(dest, str(report["html"]))
         else:
             _write_json_atomic(dest, report)
         report["saved_path"] = str(dest)

@@ -375,7 +375,7 @@ class TestProductizationRegistryReportBundleCompare(unittest.TestCase):
             self.assertIn("ALLOWED_REVIEW_REQUIRED", md_out.read_text(encoding="utf-8"))
 
             with self.assertRaises(ValueError):
-                generate_audit_report(run_id, output_root=runs_dir, fmt="html")
+                generate_audit_report(run_id, output_root=runs_dir, fmt="xml")
             with self.assertRaises(ValueError):
                 generate_audit_report(run_id, output_root=runs_dir, out_path="../escape.md")
 

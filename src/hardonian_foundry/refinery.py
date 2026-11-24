@@ -14,6 +14,11 @@ from .baseline import (
     split,
 )
 from .canonical import canonical, digest
+from .compliance import (
+    evaluate_compliance_profile,
+    evaluate_policy_bundle,
+    render_audit_html,
+)
 from .evidence import _append_with_builder as evidence_append_with_builder
 from .evidence import append as evidence_append
 from .evidence import verify_entries as evidence_verify_entries
@@ -41,6 +46,7 @@ from .refinery_runs import (
     evaluate_dataset,
     export_bundle,
     generate_audit_report,
+    generate_dataset_card,
     inspect_run,
     list_runs,
     verify_bundle,
@@ -99,8 +105,10 @@ __all__ = [
     "default_dataset",
     "diff_runs",
     "digest",
+    "evaluate_compliance_profile",
     "evaluate_dataset",
     "evaluate_license",
+    "evaluate_policy_bundle",
     "evaluate_promotion",
     "evaluate_trajectories",
     "evidence_append",
@@ -110,6 +118,7 @@ __all__ = [
     "extract_verified_license_attachment",
     "fleiss_kappa",
     "generate_audit_report",
+    "generate_dataset_card",
     "get_model",
     "inspect_run",
     "list_models",
@@ -119,6 +128,7 @@ __all__ = [
     "parse_keyring",
     "reconciliation",
     "register_model",
+    "render_audit_html",
     "resolve_ledger_path",
     "resolve_run_dir",
     "run_preflight",

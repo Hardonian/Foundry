@@ -1,0 +1,160 @@
+name: "Hardonian Foundry Promotion Gate"
+description: "Run Foundry dataset validation, tamper-evident evaluation, fail-closed promotion gate, and compliance audit report."
+inputs:
+  task-spec:
+    description: "Path to Foundry task spec JSON (for task mode evaluation)"
+    required: false
+    default: ""
+  data:
+    description: "Optional override path to dataset JSON or JSONL"
+    required: false
+    default: ""
+  baseline-predictions:
+    description: "Path to baseline JSONL predictions"
+    required: false
+    default: ""
+  model-predictions:
+    description: "Path to candidate model JSONL predictions"
+    required: false
+    default: ""
+  run-id:
+    description: "Existing run_id to verify/promote instead of creating a new run"
+    required: false
+    default: ""
+  output-root:
+    description: "Refinery runs root directory"
+    required: false
+    default: ".foundry/runs"
+  keyring:
+    description: "Path to trusted Ed25519 keyring JSON"
+    required: false
+    default: ""
+  anchor:
+    description: "Path to external ledger checkpoint anchor JSON"
+    required: false
+    default: ""
+  compliance-profile:
+    description: "Optional regulatory profile (eu-ai-act, sr-11-7, nist-ai-rmf, iso-42001)"
+    required: false
+    default: ""
+  fail-on-blocked:
+    description: "Exit non-zero when promotion status is BLOCKED"
+    required: false
+    default: "true"
+  python-version:
+    description: "Python version to provision"
+    required: false
+    default: "3.12"
+
+outputs:
+  run-id:
+    description: "Evaluated Foundry run identifier"
+    value: ${{ steps.gate.outputs.run_id }}
+  status:
+    description: "Promotion gate verdict (ALLOWED_REVIEW_REQUIRED or BLOCKED)"
+    value: ${{ steps.gate.outputs.status }}
+  promoted:
+    description: "Boolean promotion status string"
+    value: ${{ steps.gate.outputs.promoted }}
+  ledger-head:
+    description: "Verified SHA-256 ledger head digest"
+    value: ${{ steps.gate.outputs.ledger_head }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Foundry
+      shell: bash
+      run: |
+        if [ -f "pyproject.toml" ] && grep -q 'name = "hardonian-foundry"' pyproject.toml; then
+          python -m pip install --quiet -e ".[signing]"
+        else
+          python -m pip install --quiet "hardonian-foundry[signing]"
+        fi
+
+    - name: Run Foundry validation, promotion gate, and summary
+      id: gate
+      shell: bash
+      env:
+        INPUT_TASK_SPEC: ${{ inputs.task-spec }}
+        INPUT_DATA: ${{ inputs.data }}
+        INPUT_BASELINE: ${{ inputs.baseline-predictions }}
+        INPUT_MODEL: ${{ inputs.model-predictions }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_OUTPUT_ROOT: ${{ inputs.output-root }}
+        INPUT_KEYRING: ${{ inputs.keyring }}
+        INPUT_ANCHOR: ${{ inputs.anchor }}
+        INPUT_PROFILE: ${{ inputs.compliance-profile }}
+        INPUT_FAIL_ON_BLOCKED: ${{ inputs.fail-on-blocked }}
+      run: |
+        python - <<'PY'
+        import json, os, subprocess, sys
+        from pathlib import Path
+
+        out_root = os.environ["INPUT_OUTPUT_ROOT"]
+        run_id = os.environ["INPUT_RUN_ID"].strip()
+        task_spec = os.environ["INPUT_TASK_SPEC"].strip()
+        data_path = os.environ["INPUT_DATA"].strip()
+        baseline_path = os.environ["INPUT_BASELINE"].strip()
+        model_path = os.environ["INPUT_MODEL"].strip()
+        keyring = os.environ["INPUT_KEYRING"].strip()
+        anchor = os.environ["INPUT_ANCHOR"].strip()
+        profile = os.environ["INPUT_PROFILE"].strip()
+        fail_on_blocked = os.environ["INPUT_FAIL_ON_BLOCKED"].strip().lower() == "true"
+
+        if not run_id:
+            val_cmd = ["foundry", "refinery", "validate-dataset"]
+            if task_spec:
+                val_cmd.extend(["--task-spec", task_spec])
+            elif data_path:
+                val_cmd.extend(["--data", data_path])
+            subprocess.run(val_cmd, check=True)
+
+            run_cmd = ["foundry", "refinery", "run", "--output-root", out_root]
+            if task_spec:
+                run_cmd.extend(["--task-spec", task_spec, "--baseline-predictions", baseline_path, "--model-predictions", model_path])
+            elif data_path:
+                run_cmd.extend(["--data", data_path])
+            proc = subprocess.run(run_cmd, capture_output=True, text=True, check=True)
+            run_id = json.loads(proc.stdout)["run_id"]
+
+        prom_cmd = ["foundry", "refinery", "promote", run_id, "--output-root", out_root]
+        if keyring:
+            prom_cmd.extend(["--keyring", keyring])
+        if anchor:
+            prom_cmd.extend(["--anchor", anchor])
+        prom_proc = subprocess.run(prom_cmd, capture_output=True, text=True, check=False)
+        promo = json.loads(prom_proc.stdout)
+
+        rep_cmd = ["foundry", "refinery", "report", run_id, "--output-root", out_root, "--format", "json"]
+        if keyring:
+            rep_cmd.extend(["--keyring", keyring])
+        if anchor:
+            rep_cmd.extend(["--anchor", anchor])
+        if profile:
+            rep_cmd.extend(["--compliance-profile", profile])
+        rep_proc = subprocess.run(rep_cmd, capture_output=True, text=True, check=True)
+        report = json.loads(rep_proc.stdout)
+
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as handle:
+                handle.write(report.get("markdown", "") + "\n")
+
+        gh_out = os.environ.get("GITHUB_OUTPUT")
+        if gh_out:
+            with open(gh_out, "a", encoding="utf-8") as handle:
+                handle.write(f"run_id={run_id}\n")
+                handle.write(f"status={promo['status']}\n")
+                handle.write(f"promoted={'true' if promo['promoted'] else 'false'}\n")
+                handle.write(f"ledger_head={report.get('ledger_head') or ''}\n")
+
+        print(json.dumps({"run_id": run_id, "status": promo["status"], "promoted": promo["promoted"]}, indent=2))
+        if fail_on_blocked and not promo["promoted"]:
+            sys.exit(2)
+        PY

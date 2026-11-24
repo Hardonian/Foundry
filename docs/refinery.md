@@ -168,11 +168,15 @@ Task mode scores externally produced predictions against a frozen task contract 
 
 ```sh
 foundry refinery compare --task-spec spec.json [--data dataset.jsonl] --baseline-predictions baseline.jsonl --model-predictions model.jsonl [--n-bootstrap 200] [--confidence 0.95]
+foundry refinery scan-pii --data dataset.jsonl
+foundry refinery eval-trajectories --trajectories trajectories.jsonl --allowed-tools read_record,list_exceptions [--forbidden-tools shell]
+foundry refinery kappa --mode {cohen,fleiss} --input ratings.json [--min-kappa 0.75]
+foundry refinery dataset-card --task-spec spec.json [--data dataset.jsonl] [--out card.md]
 ```
 
 ### 10. Opt-in Provider Adapter (`provider`, `provider predict`)
 
-- **`foundry provider --origin <url> --model <id>`:** Single-record loopback probe (`probe`) with redirects/proxies disabled, response byte cap, circuit breaker, and strict total deadline.
+- **`foundry provider [--origin <url> | --preset <name>] --model <id>`:** Single-record loopback probe (`probe`) with named presets (`ollama`, `vllm`, `llama-cpp`, `lmstudio`), redirects/proxies disabled, response byte cap, circuit breaker, and strict total deadline.
 - **`foundry provider predict ...`:** Batch prediction generator writing `{id, label}` JSONL with fail-closed `--fallback-label UNDETERMINED` / `UNAVAILABLE` handling (never substituting heuristics on provider errors). Supports `--task-spec`, `--data`, `--labels`, `--split`, `--out`, `--failure-threshold`, plus opt-in `--allow-tls`, `--allow-remote`, `--ca-bundle`, and `--auth-token-env`.
 
 ### 11. Fail-Closed Model Registry (`registry list`, `promote`, `register`, `get`, `verify`)
@@ -185,6 +189,16 @@ foundry registry register <run_id> --output-root .foundry/runs --keyring keyring
 foundry registry get <model_id> --output-root .foundry/runs [--registry-path registry.json] [--tenant-id <id>]
 foundry registry verify --output-root .foundry/runs [--keyring keyring.json] [--registry-path registry.json]
 foundry registry promote [model_id] --output-root .foundry/runs --keyring keyring.json [--expected-head <hex>] [--expected-count <n>] [--tenant-id <id>] [--request-id <id>]
+```
+
+### 12. Scaffolding, Schemas, Importers & MCP Governance (`init`, `schema`, `import`, `mcp`)
+
+```sh
+foundry init my-gate --template {classifier,tool-gate,trajectory,reconciliation} [--name <task_id>] [--force]
+foundry schema [name] [--all] [--out <path>]
+foundry import --from {promptfoo,inspect-ai,lm-eval,mlflow} --input eval.json --out-dir imported-task/ [--task-id <id>] [--labels a,b]
+foundry mcp generate-suite --tools-schema tools.json --out-dir mcp-suite/ [--task-id <id>] [--seed 42]
+foundry mcp serve [--output-root .foundry/runs]
 ```
 
 ---

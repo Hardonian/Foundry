@@ -53,7 +53,11 @@ class CliDeepTest(unittest.TestCase):
     def test_cli_provider_probe_missing_args(self):
         rc, _, err = _run_cli(["provider", "probe"])
         self.assertEqual(rc, 2)
-        self.assertIn("required: --origin, --model", err)
+        self.assertIn("required:", err)
+        self.assertIn("--model", err)
+        rc2, _, err2 = _run_cli(["provider", "probe", "--model", "m"])
+        self.assertEqual(rc2, 2)
+        self.assertIn("--origin", err2)
 
     def test_cli_provider_predict_missing_args(self):
         rc, _, err = _run_cli(["provider", "predict", "--origin", "http://127.0.0.1:8000", "--model", "m"])

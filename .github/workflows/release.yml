@@ -1,0 +1,88 @@
+name: release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build sdist and wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Build distributions and SHA-256 checksums
+        run: |
+          python -m pip install --quiet --upgrade "pip>=26.2" build
+          python -m build --outdir dist
+          python - <<'PY'
+          import hashlib, pathlib
+          lines = []
+          for p in sorted(pathlib.Path("dist").iterdir()):
+              if p.is_file() and p.name != "SHA256SUMS.txt":
+                  lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}")
+          (pathlib.Path("dist") / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+      - name: Wheel install smoke test
+        run: |
+          python -m venv .release-venv
+          .release-venv/bin/python -m pip install --quiet --upgrade "pip>=26.2"
+          .release-venv/bin/pip install --quiet dist/*.whl
+          .release-venv/bin/foundry --version
+          .release-venv/bin/foundry doctor --verbose
+          .release-venv/bin/foundry demo
+      - uses: actions/upload-artifact@ea165f8d65b6e2a0e66f0a5c5f9b8c7c12a0f2b0 # v4
+        with:
+          name: foundry-dist
+          path: dist/
+
+  pypi-publish:
+    name: publish to PyPI (OIDC Trusted Publishing)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hardonian-foundry
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: foundry-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.12.4
+        with:
+          packages-dir: dist/
+
+  github-release:
+    name: publish GitHub Release
+    needs: [build, pypi-publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: foundry-dist
+          path: dist/
+      - name: Create GitHub Release with signed artifacts and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" dist/* \
+            --title "Hardonian Foundry $TAG_NAME" \
+            --generate-notes

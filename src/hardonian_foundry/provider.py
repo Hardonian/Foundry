@@ -30,6 +30,36 @@ from .types import ProviderResult
 MAX_RESPONSE = 32768
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+PROVIDER_PRESETS: dict[str, str] = {
+    "ollama": "http://127.0.0.1:11434",
+    "vllm": "http://127.0.0.1:8000",
+    "llama-cpp": "http://127.0.0.1:8080",
+    "lmstudio": "http://127.0.0.1:1234",
+}
+
+
+def resolve_provider_origin(
+    origin: str | None = None,
+    *,
+    preset: str | None = None,
+    allow_tls: bool = False,
+    allow_remote: bool = False,
+) -> str:
+    """Resolve and validate a provider origin from an explicit URL or named local preset."""
+    if origin is not None and preset is not None:
+        raise ValueError("specify either origin or preset, not both")
+    if preset is not None:
+        key = preset.strip().lower() if isinstance(preset, str) else ""
+        if key not in PROVIDER_PRESETS:
+            supported = ", ".join(sorted(PROVIDER_PRESETS))
+            raise ValueError(f"unknown provider preset {preset!r}; expected one of: {supported}")
+        candidate = PROVIDER_PRESETS[key]
+    elif origin is not None:
+        candidate = origin
+    else:
+        raise ValueError("provider origin or preset is required")
+    return validate_loopback_url(candidate, allow_tls=allow_tls, allow_remote=allow_remote)
+
 
 class ProviderError(OSError):
     """Structured provider transport/protocol error with stable reason_code."""

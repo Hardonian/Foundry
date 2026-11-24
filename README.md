@@ -1,9 +1,9 @@
-# Foundry
+h# Foundry
 
 [![CI](https://github.com/Hardonian/Foundry/actions/workflows/ci.yml/badge.svg)](https://github.com/Hardonian/Foundry/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-green)](pyproject.toml)
-[![Status: research baseline](https://img.shields.io/badge/status-research%20baseline-orange)](#honest-status)
+[![Status: v1.0 stable](https://img.shields.io/badge/status-v1.0%20stable-brightgreen)](#honest-status)
 
 **Evidence-first model lifecycle for AI agents.** Every evaluation run becomes a tamper-evident record, and model promotion **fails closed** until the evidence actually justifies it. No model gets promoted on vibes.
 
@@ -26,8 +26,12 @@ Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos
 | Command | What it does |
 | --- | --- |
 | `foundry --version` / `doctor [--verbose]` | Package version and offline environment/extra diagnostics |
+| `foundry init` / `schema` | Scaffold runnable synthetic projects (`classifier`, `tool-gate`, `trajectory`, `reconciliation`) and export Draft 2020-12 JSON Schemas |
+| `foundry import --from {promptfoo,inspect-ai,lm-eval,mlflow}` | Convert external eval logs into hash-chained Foundry task directories |
+| `foundry mcp {generate-suite,serve}` | Generate adversarial MCP tool suites or run a read-only JSON-RPC 2.0 governance MCP server |
 | `foundry demo` / `eval` / `policy-demo` | Deterministic synthetic reconciliation & tool-policy demonstrations |
-| `foundry refinery validate-dataset` | Integrity, uniqueness, leakage, and splitability checks (`--data` or `--task-spec`) |
+| `foundry refinery validate-dataset` / `dataset-card` | Integrity, uniqueness, leakage, PII, and SHA-256 dataset cards (`--data` or `--task-spec`) |
+| `foundry refinery scan-pii` / `eval-trajectories` / `kappa` | Pre-ingestion PII/secret scan, multi-turn trajectory safety gate, and Cohen/Fleiss agreement |
 | `foundry refinery preflight` | Safety, runtime, storage, and licensing checks (`--task-spec`, `--manifest`) |
 | `foundry refinery run` | End-to-end evaluation with hash-chained ledger and portable `run.json` |
 | `foundry refinery inspect <run_id>` | Re-verify run provenance from genesis (plus `--expected-head` / `--expected-count`) |
@@ -37,20 +41,35 @@ Every command below is cross-platform (`ubuntu-latest`, `windows-latest`, `macos
 | `foundry refinery sign <run_id>` | Verify `run.json` against seq-1 digest and append `v2` Ed25519 signature |
 | `foundry refinery list` / `diff` | List tracked runs and diff metrics/provenance between runs |
 | `foundry refinery anchor` / `export-bundle` / `verify-bundle` | Emit external/WORM head checkpoints and export/verify SHA-256 evidence bundles |
-| `foundry refinery report` / `compare` | Render JSON/Markdown compliance audit reports and McNemar + bootstrap model comparisons |
-| `foundry refinery proofpack` / `verify-proofpack` | Build and verify SHA-256-sealed read-only `Proofpack v2` contracts for downstream consumers |
+| `foundry refinery report` / `compare` | Render JSON/Markdown/HTML reports (`--compliance-profile`) and McNemar + bootstrap comparisons |
+| `foundry refinery proofpack` / `verify-proofpack` | Build and verify self-contained signed `Proofpack v2` contracts (`--keyring`, `--expected-head`, `--consumers`) |
 | `foundry refinery artifact {add,verify,list,attest,verify-attestation}` | Local content-addressed artifact store and SLSA/in-toto build attestations |
-| `foundry provider` / `provider predict` | Opt-in loopback provider probe & batch JSONL predictions (fails closed to `UNAVAILABLE`) |
+| `foundry provider` / `provider predict` | Opt-in loopback provider probe & batch JSONL predictions (`--preset ollama, vllm, llama-cpp, lmstudio`; fails closed to `UNAVAILABLE`) |
 | `foundry registry {list,promote,register,get,verify}` | Fail-closed SHA-256 model registry & promotion gate requiring `--keyring` and verified evidence |
+
+## Why Foundry Alongside Existing Tools
+
+| Capability | Foundry | MLflow / W&B | Promptfoo / Inspect AI | Sigstore / SLSA |
+| --- | --- | --- | --- | --- |
+| Mutable experiment tracking dashboards | No (immutable append ledger) | Yes | Partial | No |
+| Hash-chained evidence & anti-rollback anchoring | Yes (`evidence.jsonl` / WORM / TSA) | No | No | Transparency logs only |
+| Domain safety & zero-critical-FN promotion gates | Yes (fail-closed exit `2`) | Manual | Metric assertions only | Binary artifact only |
+| Self-contained signed `Proofpack v2` + M-of-N quorum | Yes (`verify-proofpack --keyring`) | No | No | Artifact attestation |
+| Imports external eval suites into signed gates | Yes (`foundry import`) | Exports UI | Native runner | No |
 
 ## Quick start
 
 ```sh
+pip install "hardonian-foundry[signing]"
+# Or run zero-setup diagnostics via uv:
+uvx hardonian-foundry doctor --verbose
+
+# Or from a local checkout:
 git clone https://github.com/Hardonian/Foundry && cd Foundry
 python3 -m venv .venv && .venv/bin/pip install ".[signing]"
-.venv/bin/foundry doctor --verbose
-.venv/bin/foundry refinery run --output-root .foundry/runs
-.venv/bin/foundry refinery promote <run_id> --output-root .foundry/runs   # exits 2, by design
+foundry init my-gate --template classifier
+foundry refinery run --task-spec my-gate/spec.json --baseline-predictions my-gate/baseline.jsonl --model-predictions my-gate/model.jsonl --output-root .foundry/runs
+foundry refinery promote <run_id> --output-root .foundry/runs   # exits 2, by design
 ```
 
 Source-tree mode without install: `PYTHONPATH=src python3 -m hardonian_foundry <command>` (or `$env:PYTHONPATH="src"` on Windows PowerShell).

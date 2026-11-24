@@ -3,6 +3,26 @@
 All notable changes to Foundry are documented here. The format is loosely
 based on Keep a Changelog; this project uses Semantic Versioning.
 
+## [Unreleased]
+
+### Added (Unreleased)
+
+- **Distribution & CI Adoption (`.github/workflows/release.yml`, `action.yml`):**
+  - Added automated tag-triggered PyPI OIDC Trusted Publishing + GitHub Release checksum workflow and a drop-in composite GitHub Action (`Hardonian/Foundry@v1` / `./`) emitting `$GITHUB_STEP_SUMMARY` audit reports and fail-closed exit-2 checks.
+- **Scaffolder & JSON Schemas (`scaffold.py`, `schemas.py`, `foundry init`, `foundry schema`):**
+  - Added `init_project` across `classifier`, `tool-gate`, `trajectory`, and `reconciliation` templates and Draft 2020-12 JSON Schema export (`task-spec`, `keyring`, `license-manifest`, `proofpack-v2`, `registry`, `slsa-attestation`, `policy-bundle`).
+- **Signed `Proofpack v2` & Air-Gapped Verifier (`proofpack.py`, `scripts/foundry_verify.py`):**
+  - Embedded `cryptographic_receipt` (run digest + Ed25519 signature metadata) and configurable `consumers` inside `Proofpack v2`; extended `verify_proofpack(..., keyring=..., expected_head=...)` and CLI `--keyring` / `--expected-head` / `--consumers`; added standalone `scripts/foundry_verify.py`.
+- **External Eval Importers & Local Provider Presets (`importers.py`, `provider.py`, `foundry import`):**
+  - Added pure-stdlib importers for `promptfoo`, `inspect-ai`, `lm-eval`, and `mlflow` plus `PROVIDER_PRESETS` (`ollama`, `vllm`, `llama-cpp`, `lmstudio`) and `resolve_provider_origin`.
+- **Compliance Mapping, HTML Audit Dossier & Policy Bundles (`compliance.py`, `refinery_runs.py`):**
+  - Added `evaluate_compliance_profile` (`eu-ai-act`, `sr-11-7`, `nist-ai-rmf`, `iso-42001`), XSS-safe single-file HTML dossiers (`foundry refinery report --format html --compliance-profile`), `evaluate_policy_bundle`, and `generate_dataset_card` (`foundry refinery dataset-card`).
+  - Wired `scan-pii`, `eval-trajectories`, `kappa`, and `dataset-card` into `foundry refinery` CLI.
+- **MCP Safety Generator & Read-Only Governance MCP Server (`mcp_tools.py`, `foundry mcp`):**
+  - Added `generate_mcp_adversarial_suite` and read-only JSON-RPC 2.0 `FoundryMcpServer` (`foundry mcp serve` / `generate-suite`).
+- **Enterprise Trust SPI Reference Adapters (`trust_adapters.py`):**
+  - Added `SubprocessKmsSignerProvider`, `Rfc3161TsaAnchorSink`, `ObjectLockAnchorSink`, `create_consent_receipt`, and `verify_consent_receipt`.
+
 ## [1.0.0] - 2026-11-14
 
 ### Added (1.0.0)

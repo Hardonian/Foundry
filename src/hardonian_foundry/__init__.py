@@ -10,12 +10,29 @@ from .artifact import (
     verify_build_attestation,
 )
 from .canonical import canonical, digest
+from .compliance import (
+    COMPLIANCE_PROFILES,
+    evaluate_compliance_profile,
+    evaluate_policy_bundle,
+    render_audit_html,
+)
 from .evidence import JsonlEvidenceStore, SQLiteEvidenceStore
+from .importers import (
+    IMPORT_FORMATS,
+    import_eval_results,
+    import_inspect_ai,
+    import_lm_eval,
+    import_mlflow,
+    import_promptfoo,
+)
+from .mcp_tools import FoundryMcpServer, generate_mcp_adversarial_suite
 from .proofpack import build_proofpack, verify_proofpack
 from .provider import (
+    PROVIDER_PRESETS,
     CircuitBreaker,
     ProviderError,
     predict_batch,
+    resolve_provider_origin,
     suggest,
 )
 from .refinery import (
@@ -29,6 +46,7 @@ from .refinery import (
     evaluate_promotion,
     export_bundle,
     generate_audit_report,
+    generate_dataset_card,
     inspect_run,
     list_runs,
     load_keyring,
@@ -44,6 +62,8 @@ from .registry import (
     register_model,
     verify_registry,
 )
+from .scaffold import TEMPLATES, init_project
+from .schemas import export_schemas, get_schema, list_schemas
 from .signing import (
     CallbackSignerProvider,
     LocalPemSignerProvider,
@@ -65,18 +85,33 @@ from .task_eval import (
     validate_task_dataset,
 )
 from .tenancy import TenantContext
+from .trust_adapters import (
+    ObjectLockAnchorSink,
+    Rfc3161TsaAnchorSink,
+    SubprocessKmsSignerProvider,
+    create_consent_receipt,
+    verify_consent_receipt,
+)
 
 __version__ = "1.0.0"
 
 __all__ = [
+    "COMPLIANCE_PROFILES",
+    "IMPORT_FORMATS",
+    "PROVIDER_PRESETS",
+    "TEMPLATES",
     "AnchorSink",
     "CallbackSignerProvider",
     "CircuitBreaker",
+    "FoundryMcpServer",
     "JsonlEvidenceStore",
     "LocalPemSignerProvider",
+    "ObjectLockAnchorSink",
     "ProviderError",
+    "Rfc3161TsaAnchorSink",
     "SQLiteEvidenceStore",
     "SignerProvider",
+    "SubprocessKmsSignerProvider",
     "TenantContext",
     "WormDirectoryAnchorSink",
     "__version__",
@@ -89,21 +124,35 @@ __all__ = [
     "cohens_kappa",
     "compare_task_predictions",
     "create_build_attestation",
+    "create_consent_receipt",
     "create_run",
     "create_task_run",
     "diff_runs",
     "digest",
+    "evaluate_compliance_profile",
+    "evaluate_policy_bundle",
     "evaluate_promotion",
     "evaluate_trajectories",
     "export_bundle",
+    "export_schemas",
     "fleiss_kappa",
     "generate_audit_report",
+    "generate_dataset_card",
+    "generate_mcp_adversarial_suite",
     "get_artifact_path",
     "get_model",
+    "get_schema",
+    "import_eval_results",
+    "import_inspect_ai",
+    "import_lm_eval",
+    "import_mlflow",
+    "import_promptfoo",
+    "init_project",
     "inspect_run",
     "list_artifacts",
     "list_models",
     "list_runs",
+    "list_schemas",
     "load_jsonl",
     "load_keyring",
     "load_keyring_policy",
@@ -111,6 +160,8 @@ __all__ = [
     "mcnemar_test",
     "predict_batch",
     "register_model",
+    "render_audit_html",
+    "resolve_provider_origin",
     "run_preflight",
     "scan_dataset_pii",
     "score_predictions",
@@ -123,6 +174,7 @@ __all__ = [
     "verify_artifact",
     "verify_build_attestation",
     "verify_bundle",
+    "verify_consent_receipt",
     "verify_proofpack",
     "verify_registry",
 ]

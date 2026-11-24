@@ -178,8 +178,22 @@ def _handle_policy_demo(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_records_file(path_str: str, description: str) -> list[dict[str, Any]]:
+    from .task_eval import load_jsonl
+
+    path = Path(path_str)
+    if not path.is_file():
+        raise ValueError(f"{description} file not found: {path_str}")
+    if path.suffix.lower() == ".jsonl":
+        return load_jsonl(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError(f"{description} file must contain a JSON list or JSONL records")
+    return raw
+
+
 def _handle_provider(args: argparse.Namespace, *, json_errors: bool) -> int:
-    from .provider import CircuitBreaker, predict_batch, suggest
+    from .provider import CircuitBreaker, predict_batch, resolve_provider_origin, suggest
     from .task_eval import (
         load_jsonl,
         load_predictor_dataset,
@@ -190,6 +204,12 @@ def _handle_provider(args: argparse.Namespace, *, json_errors: bool) -> int:
     action = getattr(args, "provider_action", None)
     if action == "predict":
         try:
+            resolved_origin = resolve_provider_origin(
+                getattr(args, "origin", None),
+                preset=getattr(args, "preset", None),
+                allow_tls=args.allow_tls,
+                allow_remote=args.allow_remote,
+            )
             if args.task_spec:
                 spec = _load_json_file(args.task_spec, "task spec")
                 spec_errors = validate_spec(spec)
@@ -216,7 +236,7 @@ def _handle_provider(args: argparse.Namespace, *, json_errors: bool) -> int:
             summary = predict_batch(
                 records,
                 labels=labels,
-                origin=args.origin,
+                origin=resolved_origin,
                 model=args.model,
                 timeout=args.timeout,
                 allow_tls=args.allow_tls,
@@ -240,16 +260,24 @@ def _handle_provider(args: argparse.Namespace, *, json_errors: bool) -> int:
         return EXIT_OK
 
     # Default probe / `provider probe`
-    if not getattr(args, "origin", None) or not getattr(args, "model", None):
+    raw_origin = getattr(args, "origin", None)
+    raw_preset = getattr(args, "preset", None)
+    if (not raw_origin and not raw_preset) or not getattr(args, "model", None):
         return _emit_error(
-            "Provider configuration error: --origin and --model are required",
+            "Provider configuration error: (--origin or --preset) and --model are required",
             json_errors=json_errors,
             exit_code=EXIT_BLOCKED_OR_ERROR,
         )
     try:
+        resolved_origin = resolve_provider_origin(
+            raw_origin,
+            preset=raw_preset,
+            allow_tls=args.allow_tls,
+            allow_remote=args.allow_remote,
+        )
         result = suggest(
             dataset()[0],
-            origin=args.origin,
+            origin=resolved_origin,
             model=args.model,
             timeout=args.timeout,
             allow_tls=args.allow_tls,
@@ -389,6 +417,7 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
         evaluate_promotion,
         export_bundle,
         generate_audit_report,
+        generate_dataset_card,
         inspect_run,
         list_runs,
         load_keyring,
@@ -399,9 +428,13 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
         verify_proofpack,
     )
     from .task_eval import (
+        cohens_kappa,
         compare_task_predictions,
+        evaluate_trajectories,
+        fleiss_kappa,
         load_jsonl,
         load_predictor_dataset,
+        scan_dataset_pii,
         validate_spec,
         validate_task_dataset,
     )
@@ -609,9 +642,12 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
                 tenant_context=tenant_ctx,
                 fmt=args.format,
                 out_path=args.out,
+                compliance_profile=getattr(args, "compliance_profile", None),
             )
             if args.format == "markdown" and not args.out:
                 print(report_res["markdown"])
+            elif args.format == "html" and not args.out:
+                print(report_res["html"])
             else:
                 _emit_json(report_res)
             return EXIT_OK
@@ -649,6 +685,8 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
             tenant_ctx = _build_tenant_context(args)
             keyring = load_keyring(args.keyring) if getattr(args, "keyring", None) else None
             exp_head, exp_count = _resolve_anchor_expectations(args)
+            consumers_raw = getattr(args, "consumers", None)
+            consumers_list = [c.strip() for c in consumers_raw.split(",") if c.strip()] if consumers_raw else None
             pack_res = build_proofpack(
                 args.run_id,
                 output_root=args.output_root,
@@ -657,14 +695,60 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
                 expected_count=exp_count,
                 tenant_context=tenant_ctx,
                 out_path=args.out,
+                consumers=consumers_list,
             )
             _emit_json(pack_res)
             return EXIT_OK
 
         if action == "verify-proofpack":
-            vp_res = verify_proofpack(args.proofpack_path, require_promoted=args.require_promoted)
+            vp_res = verify_proofpack(
+                args.proofpack_path,
+                require_promoted=args.require_promoted,
+                keyring=getattr(args, "keyring", None),
+                expected_head=getattr(args, "expected_head", None),
+            )
             _emit_json(vp_res)
             return EXIT_OK if vp_res["verified"] else EXIT_BLOCKED_OR_ERROR
+
+        if action == "scan-pii":
+            records = _load_records_file(args.data, "dataset")
+            pii_res = scan_dataset_pii(records)
+            _emit_json(pii_res)
+            return EXIT_OK if pii_res["clean"] else EXIT_CHECK_FAILED
+
+        if action == "eval-trajectories":
+            trajs = _load_records_file(args.trajectories, "trajectories")
+            allowed = [t.strip() for t in args.allowed_tools.split(",") if t.strip()]
+            forbidden = (
+                [t.strip() for t in args.forbidden_tools.split(",") if t.strip()]
+                if getattr(args, "forbidden_tools", None)
+                else ()
+            )
+            traj_res = evaluate_trajectories(trajs, allowed_tools=allowed, forbidden_tools=forbidden)
+            _emit_json(traj_res)
+            return EXIT_OK if traj_res["passed"] else EXIT_BLOCKED_OR_ERROR
+
+        if action == "kappa":
+            raw_kappa = _load_json_file(args.input, "kappa")
+            if args.mode == "cohen":
+                if not isinstance(raw_kappa, dict):
+                    raise ValueError("cohen kappa input must be a JSON object with rater_a and rater_b")
+                kappa_res = cohens_kappa(raw_kappa["rater_a"], raw_kappa["rater_b"], min_kappa=args.min_kappa)
+            else:
+                matrix = raw_kappa["ratings_matrix"] if isinstance(raw_kappa, dict) else raw_kappa
+                kappa_res = fleiss_kappa(matrix, min_kappa=args.min_kappa)
+            _emit_json(kappa_res)
+            return EXIT_OK if kappa_res["passes_threshold"] else EXIT_CHECK_FAILED
+
+        if action == "dataset-card":
+            card_res = generate_dataset_card(
+                args.task_spec,
+                data_path=getattr(args, "data", None),
+                out_path=getattr(args, "out", None),
+            )
+            _emit_json(card_res)
+            ok = card_res["validation_status"] == "VALID" and bool(card_res["pii_clean"])
+            return EXIT_OK if ok else EXIT_CHECK_FAILED
 
         if action == "artifact":
             art_action = args.artifact_action
@@ -729,6 +813,77 @@ def _handle_refinery(args: argparse.Namespace, *, json_errors: bool) -> int:
     return EXIT_BLOCKED_OR_ERROR
 
 
+def _handle_init(args: argparse.Namespace, *, json_errors: bool) -> int:
+    from .scaffold import init_project
+
+    try:
+        res = init_project(args.dest_dir, template=args.template, name=args.name, force=args.force)
+    except (FileExistsError, ValueError, OSError) as exc:
+        return _emit_error(f"Init error: {exc}", exc=exc, json_errors=json_errors, exit_code=EXIT_BLOCKED_OR_ERROR)
+    _emit_json(res)
+    return EXIT_OK
+
+
+def _handle_schema(args: argparse.Namespace, *, json_errors: bool) -> int:
+    from .schemas import export_schemas, get_schema, list_schemas
+
+    try:
+        if args.all and args.out:
+            _emit_json(export_schemas(args.out))
+            return EXIT_OK
+        if args.name:
+            schema_obj = get_schema(args.name)
+            if args.out:
+                out_path = Path(args.out).resolve()
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(schema_obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                _emit_json({"status": "WRITTEN", "schema": args.name, "out_path": str(out_path)})
+            else:
+                _emit_json(schema_obj)
+            return EXIT_OK
+        _emit_json({"schemas": list_schemas()})
+        return EXIT_OK
+    except (ValueError, OSError) as exc:
+        return _emit_error(f"Schema error: {exc}", exc=exc, json_errors=json_errors, exit_code=EXIT_BLOCKED_OR_ERROR)
+
+
+def _handle_import(args: argparse.Namespace, *, json_errors: bool) -> int:
+    from .importers import import_eval_results
+
+    try:
+        labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()] if args.labels else None
+        res = import_eval_results(
+            args.source_format,
+            args.input,
+            out_dir=args.out_dir,
+            task_id=args.task_id,
+            labels=labels,
+        )
+    except (FileNotFoundError, ValueError, TypeError, OSError, json.JSONDecodeError) as exc:
+        return _emit_error(f"Import error: {exc}", exc=exc, json_errors=json_errors, exit_code=EXIT_BLOCKED_OR_ERROR)
+    _emit_json(res)
+    return EXIT_OK
+
+
+def _handle_mcp(args: argparse.Namespace, *, json_errors: bool) -> int:
+    from .mcp_tools import FoundryMcpServer, generate_mcp_adversarial_suite
+
+    try:
+        if args.mcp_action == "serve":
+            server = FoundryMcpServer(default_output_root=args.output_root)
+            return server.serve_stdio()
+        res = generate_mcp_adversarial_suite(
+            args.tools_schema,
+            out_dir=args.out_dir,
+            task_id=args.task_id,
+            seed=args.seed,
+        )
+        _emit_json(res)
+        return EXIT_OK
+    except (ValueError, TypeError, OSError, json.JSONDecodeError) as exc:
+        return _emit_error(f"MCP error: {exc}", exc=exc, json_errors=json_errors, exit_code=EXIT_BLOCKED_OR_ERROR)
+
+
 def _add_tenant_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tenant-id", default=None, help="tenant identifier for fail-closed scoping")
     parser.add_argument("--request-id", default=None, help="request identifier for tenant context")
@@ -741,7 +896,16 @@ def _add_anchor_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_provider_connection_args(parser: argparse.ArgumentParser, *, required: bool) -> None:
-    parser.add_argument("--origin", required=required, default=None, help="numeric loopback HTTP origin with port (or HTTPS with --allow-tls)")
+    from .provider import PROVIDER_PRESETS
+
+    origin_group = parser.add_mutually_exclusive_group(required=required)
+    origin_group.add_argument("--origin", default=None, help="numeric loopback HTTP origin with port (or HTTPS with --allow-tls)")
+    origin_group.add_argument(
+        "--preset",
+        choices=sorted(PROVIDER_PRESETS),
+        default=None,
+        help="named local provider origin preset (ollama, vllm, llama-cpp, lmstudio)",
+    )
     parser.add_argument("--model", required=required, default=None, help="model name")
     parser.add_argument("--timeout", type=float, default=3.0, help="per-request deadline in seconds (<= 10)")
     parser.add_argument("--allow-tls", action="store_true", help="opt-in to HTTPS provider origins")
@@ -889,12 +1053,18 @@ def _build_parser() -> _FoundryArgumentParser:
     report_parser = ref_sub.add_parser(
         "report",
         parents=[common],
-        help="generate JSON/Markdown compliance audit report for a run",
+        help="generate JSON/Markdown/HTML compliance audit report for a run",
     )
     report_parser.add_argument("run_id", help="run identifier to report")
     report_parser.add_argument("--output-root", default=None, help="path to runs directory")
     report_parser.add_argument("--keyring", default=None, help="trusted keyring JSON for signature verification")
-    report_parser.add_argument("--format", choices=["json", "markdown"], default="json", help="output format")
+    report_parser.add_argument("--format", choices=["json", "markdown", "html"], default="json", help="output format")
+    report_parser.add_argument(
+        "--compliance-profile",
+        choices=["eu-ai-act", "sr-11-7", "nist-ai-rmf", "iso-42001"],
+        default=None,
+        help="optional regulatory control mapping profile",
+    )
     report_parser.add_argument("--out", default=None, help="optional output file path")
     _add_anchor_args(report_parser)
     _add_tenant_args(report_parser)
@@ -919,6 +1089,7 @@ def _build_parser() -> _FoundryArgumentParser:
     proofpack_parser.add_argument("run_id", help="run identifier to package")
     proofpack_parser.add_argument("--output-root", default=None, help="path to runs directory")
     proofpack_parser.add_argument("--keyring", default=None, help="trusted keyring JSON for signature verification")
+    proofpack_parser.add_argument("--consumers", default=None, help="comma-separated downstream consumers list")
     proofpack_parser.add_argument("--out", default=None, help="optional output path for proofpack JSON")
     _add_anchor_args(proofpack_parser)
     _add_tenant_args(proofpack_parser)
@@ -934,6 +1105,26 @@ def _build_parser() -> _FoundryArgumentParser:
         action="store_true",
         help="fail closed unless proofpack proves ALLOWED_REVIEW_REQUIRED promotion",
     )
+    verify_pp_parser.add_argument("--keyring", default=None, help="optional trusted keyring JSON for offline Ed25519 verification")
+    verify_pp_parser.add_argument("--expected-head", default=None, help="optional expected 64-char ledger head SHA-256")
+
+    pii_parser = ref_sub.add_parser("scan-pii", parents=[common], help="scan JSON/JSONL dataset for unredacted PII or secrets")
+    pii_parser.add_argument("--data", required=True, help="path to JSON or JSONL dataset")
+
+    traj_parser = ref_sub.add_parser("eval-trajectories", parents=[common], help="evaluate multi-turn agent trajectories fail-closed")
+    traj_parser.add_argument("--trajectories", required=True, help="path to JSON or JSONL trajectories file")
+    traj_parser.add_argument("--allowed-tools", required=True, help="comma-separated allowed tool names")
+    traj_parser.add_argument("--forbidden-tools", default=None, help="optional comma-separated forbidden tool names")
+
+    kappa_parser = ref_sub.add_parser("kappa", parents=[common], help="compute Cohen's or Fleiss' inter-rater kappa agreement")
+    kappa_parser.add_argument("--mode", choices=["cohen", "fleiss"], required=True, help="kappa calculation mode")
+    kappa_parser.add_argument("--input", required=True, help="path to JSON ratings input")
+    kappa_parser.add_argument("--min-kappa", type=float, default=0.75, help="minimum passing kappa threshold")
+
+    dc_parser = ref_sub.add_parser("dataset-card", parents=[common], help="generate SHA-256-pinned dataset card with PII & validation proof")
+    dc_parser.add_argument("--task-spec", required=True, help="path to task specification JSON")
+    dc_parser.add_argument("--data", default=None, help="optional override dataset JSONL path")
+    dc_parser.add_argument("--out", default=None, help="optional output path (.json or .md)")
 
     art_parser = ref_sub.add_parser("artifact", parents=[common], help="content-addressed artifact store operations")
     art_sub = art_parser.add_subparsers(dest="artifact_action", required=True)
@@ -987,6 +1178,45 @@ def _build_parser() -> _FoundryArgumentParser:
     art_ver_att.add_argument("--subject", default=None, help="optional subject artifact path to verify SHA-256 against")
     art_ver_att.add_argument("--expected-sha256", default=None, help="optional expected 64-char subject SHA-256")
 
+    init_parser = sub.add_parser("init", parents=[common], help="scaffold a runnable synthetic Foundry project")
+    init_parser.add_argument("dest_dir", help="destination project directory")
+    init_parser.add_argument(
+        "--template",
+        choices=["classifier", "tool-gate", "trajectory", "reconciliation"],
+        default="classifier",
+        help="project template",
+    )
+    init_parser.add_argument("--name", default=None, help="optional task_id / project name")
+    init_parser.add_argument("--force", action="store_true", help="overwrite existing scaffold files")
+
+    schema_parser = sub.add_parser("schema", parents=[common], help="inspect or export Draft 2020-12 JSON Schemas")
+    schema_parser.add_argument("name", nargs="?", default=None, help="optional schema name")
+    schema_parser.add_argument("--all", action="store_true", help="export all schemas into --out directory")
+    schema_parser.add_argument("--out", default=None, help="optional output file or directory path")
+
+    import_parser = sub.add_parser("import", parents=[common], help="import external eval results into a Foundry task directory")
+    import_parser.add_argument(
+        "--from",
+        dest="source_format",
+        choices=["promptfoo", "inspect-ai", "lm-eval", "mlflow"],
+        required=True,
+        help="source evaluation log format",
+    )
+    import_parser.add_argument("--input", required=True, help="path to source JSON evaluation log")
+    import_parser.add_argument("--out-dir", required=True, help="output directory for Foundry task files")
+    import_parser.add_argument("--task-id", default=None, help="optional Foundry task_id override")
+    import_parser.add_argument("--labels", default=None, help="optional comma-separated label allowlist")
+
+    mcp_parser = sub.add_parser("mcp", parents=[common], help="MCP tool-safety suite generator and read-only governance server")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action", required=True)
+    mcp_serve = mcp_sub.add_parser("serve", parents=[common], help="start read-only JSON-RPC 2.0 governance MCP server on stdio")
+    mcp_serve.add_argument("--output-root", default=None, help="default Refinery runs directory")
+    mcp_gen = mcp_sub.add_parser("generate-suite", parents=[common], help="generate adversarial Foundry task suite from MCP tools/list schema")
+    mcp_gen.add_argument("--tools-schema", required=True, help="path to MCP tools/list JSON schema file")
+    mcp_gen.add_argument("--out-dir", required=True, help="output task directory")
+    mcp_gen.add_argument("--task-id", default=None, help="optional task_id")
+    mcp_gen.add_argument("--seed", type=int, default=42, help="deterministic seed")
+
     return parser
 
 
@@ -1008,6 +1238,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "provider": lambda: _handle_provider(args, json_errors=json_errors),
         "registry": lambda: _handle_registry(args, json_errors=json_errors),
         "refinery": lambda: _handle_refinery(args, json_errors=json_errors),
+        "init": lambda: _handle_init(args, json_errors=json_errors),
+        "schema": lambda: _handle_schema(args, json_errors=json_errors),
+        "import": lambda: _handle_import(args, json_errors=json_errors),
+        "mcp": lambda: _handle_mcp(args, json_errors=json_errors),
     }
     return handlers[args.command]()
 

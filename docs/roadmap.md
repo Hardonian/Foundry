@@ -77,12 +77,11 @@ flowchart LR
 
 ### `v1.1` — Pluggable Custody & Transparency Anchoring
 
-1. **`SignerProvider` Service Provider Interface (`signing.py`) — Core SPI Implemented**
-   - Shipped `@runtime_checkable class SignerProvider`, `LocalPemSignerProvider`, and `CallbackSignerProvider` plus `sign_run(..., signer=...)` enforcing offline Ed25519 verification before accepting any external callback signature.
-   - Future work: vendor-specific cloud SDK wrappers (AWS KMS, GCP Cloud KMS, Azure Key Vault, PKCS#11 HSM, keyless OIDC Sigstore bundles) plugging directly into `SignerProvider`.
-2. **External Anti-Rollback `AnchorSink` Integrations — Core SPI & WORM Sink Implemented**
-   - Shipped `@runtime_checkable class AnchorSink`, `WormDirectoryAnchorSink` (conflict-detecting write-once storage per head digest), `anchor_run(..., sink=..., worm_dir=...)`, and CLI `foundry refinery anchor --worm-dir <dir>`.
-   - Future work: external RFC 3161 Time-Stamping Authority (TSA) HTTP clients, S3/GCS Object Lock WORM adapters, and Rekor/Trillian transparency-log inclusion receipts.
+1. **`SignerProvider` Service Provider Interface (`signing.py` & `trust_adapters.py`) — Core SPI & Subprocess KMS Shipped**
+   - Shipped `@runtime_checkable class SignerProvider`, `LocalPemSignerProvider`, `CallbackSignerProvider`, and `SubprocessKmsSignerProvider` (`shell=False`, offline Ed25519 signature verification) plus `sign_run(..., signer=...)`.
+   - Future work: first-party vendor cloud SDK packages (`hardonian-foundry-kms` for AWS/GCP/Azure KMS, PKCS#11 HSM, keyless OIDC Sigstore).
+2. **External Anti-Rollback `AnchorSink` Integrations — Core SPI, WORM, RFC 3161 TSA & Object Lock Shipped**
+   - Shipped `@runtime_checkable class AnchorSink`, `WormDirectoryAnchorSink`, `Rfc3161TsaAnchorSink`, `ObjectLockAnchorSink`, `anchor_run(..., sink=..., worm_dir=...)`, and CLI `foundry refinery anchor --worm-dir <dir>`.
 
 ### `v1.2` — Hermetic Execution & Artifact Lineage
 
@@ -112,7 +111,7 @@ flowchart LR
 
 ### `v1.5` — Consented Pilot & Privacy Verification Automation — Pre-Ingestion PII Scanner Implemented
 
-- **Signed Consent Receipts (Planned):** Upgrade `governance_attestation` from declarative metadata to Ed25519/KMS-signed organizational approvals referencing IRB/legal retention policies and redaction audits.
+- **Signed Consent Receipts — Shipped:** Added `create_consent_receipt` and `verify_consent_receipt` (`trust_adapters.py`) signing `governance_attestation` payloads with Ed25519 against a trusted keyring.
 - **Pre-Ingestion PII & Canary Scanners — Implemented:** Shipped `scan_dataset_pii` (`task_eval.py`) blocking residual emails, US SSNs, IBANs, and API secret tokens before `consented_pilot` or `redacted_eval` ingestion without echoing sensitive text into logs.
 
 ---
@@ -123,10 +122,10 @@ flowchart LR
 
 1. **Cross-Organization Threshold Keyrings (Planned)**
    - Extend quorum policies (`required_signatures`, `required_roles`) with organization namespaces, time-bounded delegation certificates, and CRL/revocation distribution feeds so no single entity can unilaterally forge promotion readiness.
-2. **Air-Gapped Standalone Verifier Distribution (`foundry-verify`) (Planned)**
-   - Publish a minimal zero-heavy-dependency verifier package (`stdlib` + optional PyCA `cryptography`) capable of auditing any `export-bundle` archive, RFC 3161 anchor, and `registry.json` snapshot in locked-down compliance enclaves.
-3. **Versioned Proofpack Contract for Downstream Consumers — `Proofpack v2` Implemented**
-   - Shipped `proofpack.py` (`build_proofpack`, `verify_proofpack`) and CLI `foundry refinery proofpack` / `verify-proofpack` emitting and verifying SHA-256-sealed `hardonian.foundry.proofpack.v2` JSON payloads (`read_only_advisory`, `review_required: true`, `financial_write: false`, `executed: false`) for `model-tools`, `Settler`, and `SAT-Frontier` without coupling repositories.
+2. **Air-Gapped Standalone Verifier Distribution (`scripts/foundry_verify.py`) — Reference Verifier Shipped**
+   - Shipped `scripts/foundry_verify.py` (`proofpack`, `registry`, `bundle`) verifying `Proofpack v2` digests, anchor heads, Ed25519 keyrings, and `registry.json` integrity offline; standalone wheel packaging remains optional.
+3. **Versioned Proofpack Contract for Downstream Consumers — Signed `Proofpack v2` Implemented**
+   - Shipped `proofpack.py` (`build_proofpack`, `verify_proofpack`) and CLI `foundry refinery proofpack` / `verify-proofpack` emitting and verifying SHA-256-sealed + Ed25519-receipted `hardonian.foundry.proofpack.v2` JSON payloads (`--keyring`, `--expected-head`, `--consumers`) plus `compliance.py` regulatory control profiles (`eu-ai-act`, `sr-11-7`, `nist-ai-rmf`, `iso-42001`), HTML audit dossiers, `scaffold.py`, `schemas.py`, `importers.py`, and `mcp_tools.py`.
 
 ---
 
