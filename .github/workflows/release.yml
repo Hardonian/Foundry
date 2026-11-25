@@ -7,6 +7,10 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+      - 'pyproject.toml'
+      - 'MANIFEST.in'
+      - 'scripts/verify_packaged_case_study.py'
+      - 'examples/case-study-exception-codes/**'
 
 permissions:
   contents: read
