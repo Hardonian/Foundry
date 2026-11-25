@@ -4,6 +4,9 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
 
 permissions:
   contents: read
@@ -20,6 +23,17 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+      - name: Check release tag matches package version
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if os.environ["RELEASE_TAG"] != f"v{version}":
+              raise SystemExit(f"Release tag must match package version: expected v{version}")
+          PY
       - name: Build distributions and SHA-256 checksums
         run: |
           python -m pip install --quiet --upgrade "pip>=26.2" build
@@ -40,6 +54,21 @@ jobs:
           .release-venv/bin/foundry --version
           .release-venv/bin/foundry doctor --verbose
           .release-venv/bin/foundry demo
+      - name: Replay signed evidence from the release sdist with the installed wheel
+        env:
+          TMPDIR: ${{ runner.temp }}
+          CUDA_VISIBLE_DEVICES: ''
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: |
+          .release-venv/bin/pip install --quiet 'cryptography>=42.0'
+          python - <<'PY'
+          import pathlib, tarfile
+          archive, = pathlib.Path("dist").glob("*.tar.gz")
+          with tarfile.open(archive) as source:
+              source.extractall(".release-source", filter="data")
+          PY
+          .release-venv/bin/python -I .release-source/*/scripts/verify_packaged_case_study.py
       - uses: actions/upload-artifact@ea165f8d65b6e2a0e66f0a5c5f9b8c7c12a0f2b0 # v4
         with:
           name: foundry-dist
