@@ -69,7 +69,7 @@ jobs:
               source.extractall(".release-source", filter="data")
           PY
           .release-venv/bin/python -I .release-source/*/scripts/verify_packaged_case_study.py
-      - uses: actions/upload-artifact@ea165f8d65b6e2a0e66f0a5c5f9b8c7c12a0f2b0 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: foundry-dist
           path: dist/
