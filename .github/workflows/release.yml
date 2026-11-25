@@ -63,12 +63,19 @@ jobs:
         run: |
           .release-venv/bin/pip install --quiet 'cryptography>=42.0'
           python - <<'PY'
-          import pathlib, tarfile
-          archive, = pathlib.Path("dist").glob("*.tar.gz")
-          with tarfile.open(archive) as source:
-              source.extractall(".release-source", filter="data")
+          import pathlib, subprocess, tarfile
+          archives = sorted(pathlib.Path("dist").glob("*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"Expected exactly one sdist, found {len(archives)}")
+          destination = pathlib.Path(".release-source")
+          destination.mkdir()
+          with tarfile.open(archives[0]) as source:
+              source.extractall(destination, filter="data")
+          scripts = sorted(destination.glob("*/scripts/verify_packaged_case_study.py"))
+          if len(scripts) != 1:
+              raise SystemExit(f"Expected exactly one packaged replay script, found {len(scripts)}")
+          subprocess.run([".release-venv/bin/python", "-I", str(scripts[0])], check=True)
           PY
-          .release-venv/bin/python -I .release-source/*/scripts/verify_packaged_case_study.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: foundry-dist
