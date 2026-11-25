@@ -473,10 +473,12 @@ class TestTrustAdaptersCliExposureAndWorkflows(unittest.TestCase):
             ol_sink = ObjectLockAnchorSink(bucket="foundry-worm", client=client)
             anc_ol = anchor_run(run["run_id"], output_root=runs_dir, sink=ol_sink)
             self.assertEqual(anc_ol["sink_receipt"]["object_lock_mode"], "COMPLIANCE")
-            # Re-anchoring same head succeeds idempotently; conflicting head fails closed
-            anchor_run(run["run_id"], output_root=runs_dir, sink=ol_sink)
-            with self.assertRaises(ValueError):
-                ol_sink.publish({**anc_ol, "count": 999})  # type: ignore[arg-type]
+            # Idempotency applies to an exact retry, not a freshly timestamped anchor.
+            retry = anc_ol.copy()
+            retry.pop("sink_receipt")
+            self.assertEqual(ol_sink.publish(retry)["receipt_sha256"], anc_ol["sink_receipt"]["receipt_sha256"])
+            with self.assertRaisesRegex(ValueError, "conflicting anchor exists for head"):
+                ol_sink.publish({**retry, "count": 999})  # type: ignore[arg-type]
 
             # Signed consent receipt
             att = {"tier": "redacted_eval", "attestation_id": "att-001", "approved_by": "irb", "approved_at": "2026-11-24T00:00:00Z", "redacted": True}
